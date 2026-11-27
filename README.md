@@ -2,6 +2,8 @@
 
 **NasaNaTo** is a lightweight, offline-capable OpenStreetMap field mapper and street contributor tool designed for on-the-ground surveying, POI pinning, road/street attribute tagging, and multi-format export (`.osc`, `.geojson`, `.csv`, and `.gpx`).
 
+Note: The name "NasaNato" is a shortened version of the Filipino question or interrogative phrase, "Nasaan na ito?" or "Where is it?" in English.
+
 ## Features
 - **Fullscreen Field Map & Reticle:** Centered precision crosshair with coordinate readout, quick zoom controls, and multi-tier basemap switching (`Map`, `Sat`, `Topo`, `Gray`) plus tile reload.
 - **Pin Shop & POI Presets:** Philippine-focused POI presets, address auto-fill, payment/hours chips, custom OSM tags, duplicate proximity checks, and local-only reference photo storage in IndexedDB.
