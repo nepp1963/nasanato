@@ -1,0 +1,22 @@
+{
+  "name": "nasanato",
+  "version": "1.0.0",
+  "description": "NasaNaTo - OpenStreetMap Field Mapper & Street Contributor",
+  "type": "module",
+  "scripts": {
+    "dev": "python3 -m http.server 8080 --bind 0.0.0.0",
+    "build": "echo 'Static HTML project - no build step required'",
+    "lint": "echo 'No linter configured'",
+    "test": "echo 'No tests configured'"
+  },
+  "keywords": [
+    "openstreetmap",
+    "field-mapper",
+    "osm"
+  ],
+  "author": "VelocityVibe Systems",
+  "license": "MIT",
+  "dependencies": {
+    "@vercel/analytics": "^1.4.1"
+  }
+}
