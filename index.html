@@ -421,7 +421,7 @@
       <!-- Quick-Jump Philippine Location Chips -->
       <div class="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center gap-1.5 overflow-x-auto custom-scroll">
         <button type="button" onclick="executeSilentJump('Rizal Monument (Kilometer 0), Rizal Park')" class="px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-300 text-[11px] font-bold text-emerald-800 whitespace-nowrap shrink-0">KM 0 Rizal Monument</button>
-        <button type="button" onclick="executeSilentJump('Laguna Bel-Air, Santa Rosa, Laguna')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Santa Rosa (Laguna Bel-Air)</button>
+        <button type="button" onclick="executeSilentJump('Santa Rosa, Laguna')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Santa Rosa, Laguna</button>
         <button type="button" onclick="executeSilentJump('Tanza, Cavite')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Tanza, Cavite</button>
         <button type="button" onclick="executeSilentJump('Rizal Park (Luneta)')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Rizal Park</button>
         <button type="button" onclick="executeSilentJump('Intramuros, Manila')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Intramuros</button>
@@ -484,9 +484,9 @@
             >Rizal Monument (KM 0)</button>
             <button
               type="button"
-              onclick="toggleModal('modal-tools', false); executeSilentJump('Laguna Bel-Air, Santa Rosa, Laguna')"
+              onclick="toggleModal('modal-tools', false); executeSilentJump('Santa Rosa, Laguna')"
               class="py-2 px-2 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-100/70 text-[11px] font-bold text-emerald-900 text-center transition"
-            >Santa Rosa (Bel-Air)</button>
+            >Santa Rosa, Laguna</button>
             <button
               type="button"
               onclick="toggleModal('modal-tools', false); executeSilentJump('Tanza, Cavite')"
@@ -809,6 +809,12 @@
             </div>
             <span class="text-rose-700 font-extrabold text-sm">&rarr;</span>
           </button>
+
+          <button
+            type="button"
+            onclick="hideActiveReferencePoi()"
+            class="mt-1 p-2.5 rounded-2xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-center font-bold text-slate-700 transition"
+          >Hide Marker from Map</button>
         </div>
       </div>
     </div>
@@ -1155,16 +1161,6 @@
         addr: { brgy: 'Kanluran', city: 'Santa Rosa', prov: 'Laguna' }
       },
       {
-        id: 4102916,
-        name: 'Laguna Bel-Air, Santa Rosa, Laguna',
-        aliases: ['laguna bel air', 'laguna bel-air', 'bel air santa rosa'],
-        cat: 'subdivision',
-        lat: 14.27006,
-        lon: 121.07129,
-        zoom: 16,
-        addr: { brgy: 'Don Jose', city: 'Santa Rosa', prov: 'Laguna' }
-      },
-      {
         id: 5104401,
         name: 'Tanza, Cavite',
         aliases: ['tanza', 'tanza cavite', 'tanza plaza'],
@@ -1211,6 +1207,7 @@
 
     let queuedEdits = [];
     let scannedOverpassNodes = [];
+    let hiddenPoiIds = new Set();
     let customTagRows = [];
     let gpxPoints = [];
     let isRecordingGpx = false;
@@ -1475,6 +1472,7 @@
     function renderReferencePois() {
       existingPoiLayer.clearLayers();
       PH_REFERENCE_PLACES.forEach((poi) => {
+        if (hiddenPoiIds.has(String(poi.id))) return;
         const marker = L.circleMarker([poi.lat, poi.lon], {
           radius: 6,
           fillColor: '#475569',
@@ -1956,6 +1954,14 @@
       toggleModal('modal-audit-poi', true);
     }
 
+    function hideActiveReferencePoi() {
+      if (!activeAuditPoi) return;
+      hiddenPoiIds.add(String(activeAuditPoi.id));
+      renderReferencePois();
+      toggleModal('modal-audit-poi', false);
+      showToast(`Hid "${activeAuditPoi.name}" marker from map.`, 'info');
+    }
+
     function queuePoiAudit(mode) {
       if (!activeAuditPoi) return;
       const updatedTags = {
@@ -2353,7 +2359,7 @@
       if (!queuedFeatureLayer) return;
       queuedFeatureLayer.clearLayers();
 
-      queuedEdits.forEach((item) => {
+      queuedEdits.forEach((item, idx) => {
         const isRoad = item.type === 'road_survey';
         const isAudit = item.type === 'modify_node';
         const bgClass = isRoad ? 'bg-amber-600' : isAudit ? 'bg-sky-600' : 'bg-emerald-600';
@@ -2366,10 +2372,15 @@
 
         const marker = L.marker([item.lat, item.lon], { icon }).addTo(queuedFeatureLayer);
         marker.bindPopup(`
-          <div class="text-xs font-sans space-y-1">
+          <div class="text-xs font-sans space-y-1.5 min-w-[150px]">
             <div class="font-extrabold text-slate-900">${escapeHtml(item.tags.name || 'Field Note')}</div>
             <div class="text-[11px] font-semibold text-emerald-700">${escapeHtml(item.presetLabel)}</div>
             <div class="text-[10px] font-mono text-slate-500">${item.lat.toFixed(5)}, ${item.lon.toFixed(5)}</div>
+            <button
+              type="button"
+              onclick="removeQueuedItem(${idx}); map.closePopup(); showToast('Removed queued pin.', 'info');"
+              class="w-full mt-1 py-1 px-2 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-bold text-[11px] transition"
+            >Remove Pin</button>
           </div>
         `);
       });
