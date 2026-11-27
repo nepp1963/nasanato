@@ -1,0 +1,2665 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#059669" />
+  <title>NasaNaTo — OpenStreetMap Field Mapper &amp; Street Contributor</title>
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Leaflet 1.9.4 CSS & JS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <style>
+    /* Root viewport lock so map, center reticle, and split bottom dock remain pinned across mobile & desktop iframes */
+    html, body, #app-shell {
+      position: fixed;
+      inset: 0;
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    code, pre, .font-mono {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    }
+
+    /* Fullscreen map canvas with subtle surveyor coordinate grid fallback while tiles load */
+    #map {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      background-color: #f1f5f9;
+      background-image:
+        linear-gradient(to right, rgba(148, 163, 184, 0.25) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(148, 163, 184, 0.25) 1px, transparent 1px);
+      background-size: 32px 32px;
+    }
+
+    /* Hide default Leaflet chrome in favor of custom HUD */
+    .leaflet-control-attribution,
+    .leaflet-control-zoom {
+      display: none !important;
+    }
+
+    /* Strictly centered precision crosshair reticle */
+    #center-reticle {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      z-index: 400;
+    }
+
+    /* Safe-area bottom padding */
+    .bottom-dock-safe {
+      bottom: max(12px, env(safe-area-inset-bottom));
+    }
+
+    /* Compact Iframe Auto-Fit for Google Sites & Short Desktop Embeds (height < 640px) */
+    @media (max-height: 639px) {
+      .bottom-dock-safe {
+        bottom: 8px !important;
+      }
+      .compact-iframe-header {
+        padding-top: 0.4rem !important;
+      }
+      .compact-iframe-left-controls {
+        top: 84px !important;
+      }
+      .compact-dock-btn {
+        height: 2.35rem !important;
+      }
+    }
+
+    /* Sub-meter Loupe Inset Map */
+    #loupe-map {
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    /* Spotlight & Reticle Animations */
+    @keyframes spotlightPing {
+      0% { transform: scale(0.85); opacity: 0.9; }
+      75%, 100% { transform: scale(2.35); opacity: 0; }
+    }
+    .spotlight-ring {
+      animation: spotlightPing 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+    }
+
+    @keyframes reticleBreathe {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.06); }
+    }
+    .reticle-pulse {
+      animation: reticleBreathe 2.6s ease-in-out infinite;
+    }
+
+    /* Custom subtle scrollbars inside drawers */
+    .custom-scroll::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
+  </style>
+</head>
+<body class="select-none">
+  <div id="app-shell">
+
+    <!-- Fullscreen Interactive Map -->
+    <div id="map"></div>
+
+    <!-- Sub-Meter Crosshair Loupe (2x Magnified Inset Lens, Toggleable in Field Tools) -->
+    <div
+      id="loupe-container"
+      class="hidden pointer-events-none fixed top-28 right-3 z-30 w-32 h-32 sm:w-36 sm:h-36 rounded-full border-4 border-emerald-600/95 bg-slate-100 shadow-2xl overflow-hidden"
+    >
+      <div id="loupe-map"></div>
+      <div class="absolute inset-0 flex items-center justify-center">
+        <div class="w-4 h-4 rounded-full border-2 border-amber-500 bg-amber-400/20"></div>
+        <div class="absolute w-full h-[1px] bg-emerald-600/45"></div>
+        <div class="absolute h-full w-[1px] bg-emerald-600/45"></div>
+      </div>
+      <span class="absolute bottom-1.5 inset-x-0 text-center text-[9px] font-extrabold uppercase tracking-wider text-emerald-950 bg-white/85 py-0.5">
+        2x Loupe
+      </span>
+    </div>
+
+    <!-- Left Floating Zoom + Road Quick-Tag Controls -->
+    <div class="compact-iframe-left-controls fixed left-2.5 top-[96px] z-30 flex flex-col gap-2 pointer-events-auto">
+      <div class="flex flex-col bg-white/95 backdrop-blur-md border border-slate-200/90 shadow-lg rounded-2xl overflow-hidden">
+        <button
+          id="btn-zoom-in"
+          type="button"
+          aria-label="Zoom in"
+          title="Zoom in (+)"
+          class="w-10 h-10 flex items-center justify-center text-slate-800 hover:bg-slate-100 active:bg-emerald-50 active:text-emerald-700 font-extrabold text-lg border-b border-slate-200/80 transition cursor-pointer"
+        >+</button>
+        <button
+          id="btn-zoom-out"
+          type="button"
+          aria-label="Zoom out"
+          title="Zoom out (-)"
+          class="w-10 h-10 flex items-center justify-center text-slate-800 hover:bg-slate-100 active:bg-emerald-50 active:text-emerald-700 font-extrabold text-lg transition cursor-pointer"
+        >&minus;</button>
+      </div>
+
+      <!-- Road / Unnamed Street Attribute Tool Button -->
+      <button
+        type="button"
+        onclick="openRoadModal()"
+        title="Tag Road Surface, Lanes, One-Way or Unnamed Street"
+        class="w-10 h-10 bg-white/95 hover:bg-amber-50 active:scale-95 backdrop-blur-md border border-slate-200/90 shadow-lg rounded-2xl flex flex-col items-center justify-center text-amber-700 transition cursor-pointer"
+      >
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 19L8 5"/>
+          <path d="M16 5l4 14"/>
+          <path d="M12 6v2"/>
+          <path d="M12 11v2"/>
+          <path d="M12 16v2"/>
+        </svg>
+        <span class="text-[8px] font-extrabold uppercase leading-none mt-0.5">ROAD</span>
+      </button>
+    </div>
+
+    <!-- Fixed Center Precision Target Crosshair (Strictly Centered at 50% / 50%) -->
+    <div id="center-reticle">
+      <div class="relative flex items-center justify-center reticle-pulse">
+        <div class="w-12 h-12 rounded-full border-2 border-emerald-600/90 bg-emerald-500/10 flex items-center justify-center shadow-xs">
+          <div class="w-2.5 h-2.5 rounded-full bg-amber-500 ring-2 ring-emerald-700"></div>
+        </div>
+        <div class="absolute -top-2.5 w-0.5 h-2.5 bg-emerald-700 rounded-full"></div>
+        <div class="absolute -bottom-2.5 w-0.5 h-2.5 bg-emerald-700 rounded-full"></div>
+        <div class="absolute -left-2.5 h-0.5 w-2.5 bg-emerald-700 rounded-full"></div>
+        <div class="absolute -right-2.5 h-0.5 w-2.5 bg-emerald-700 rounded-full"></div>
+      </div>
+    </div>
+
+    <!-- Top Floating Header HUD -->
+    <header class="compact-iframe-header fixed top-0 inset-x-0 z-30 px-2.5 pt-2.5 pointer-events-none">
+      <div class="max-w-3xl mx-auto flex flex-col gap-1.5">
+
+        <!-- Row 1: Brand Pill (Left) + Tools, Scan & Disclaimer Buttons (Right) -->
+        <div class="flex items-center justify-between gap-2 w-full">
+          <!-- Brand Pill -->
+          <div class="pointer-events-auto flex items-center gap-2 bg-white/95 backdrop-blur-md border border-slate-200/90 shadow-md rounded-2xl px-2.5 py-1.5 shrink-0">
+            <div class="w-7 h-7 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/>
+                <circle cx="12" cy="10" r="3"/>
+              </svg>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <span class="font-extrabold text-sm tracking-tight text-slate-900">NasaNaTo</span>
+              <span class="text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800">OSM</span>
+            </div>
+          </div>
+
+          <!-- Right Action Controls: Tools + Overpass Scan + Disclaimer (?) -->
+          <div class="pointer-events-auto flex items-center gap-1 sm:gap-1.5 shrink-0">
+            <button
+              id="btn-open-tools"
+              type="button"
+              onclick="toggleModal('modal-tools', true)"
+              class="relative flex items-center gap-1 bg-white/95 hover:bg-slate-50 active:scale-95 border border-slate-200/90 text-slate-800 text-[11px] sm:text-xs font-bold px-2 sm:px-2.5 py-1.5 sm:py-2 rounded-2xl shadow-md transition shrink-0"
+              title="GNSS Averaging, GPX Recorder, 2x Loupe, Offline Cache & Region Jumps"
+            >
+              <svg class="w-3.5 h-3.5 text-emerald-600 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+              <span>Tools</span>
+              <span id="gpx-recording-dot" class="hidden w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
+            </button>
+
+            <button
+              id="btn-scan-area"
+              type="button"
+              onclick="scanCurrentArea()"
+              class="flex items-center gap-1 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white text-[11px] sm:text-xs font-semibold px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-2xl shadow-md transition shrink-0"
+              title="Scan nearby OSM shops & amenities via Overpass API"
+            >
+              <svg id="scan-icon" class="w-3.5 h-3.5 text-amber-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/>
+                <path d="M4 6h.01"/>
+                <path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/>
+                <path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/>
+                <circle cx="12" cy="12" r="2"/>
+              </svg>
+              <span id="scan-label">Scan</span>
+            </button>
+
+            <button
+              type="button"
+              onclick="toggleModal('modal-disclaimer', true)"
+              class="w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center bg-white/95 hover:bg-slate-50 active:scale-95 border border-slate-200/90 shadow-md rounded-full text-slate-700 font-extrabold text-xs transition shrink-0"
+              title="ODbL License, Safety Notice & External Navigation"
+            >?</button>
+          </div>
+        </div>
+
+        <!-- Row 2: Compact Right-Aligned Coordinate Pill + Compact Basemap Switcher Pill -->
+        <div class="flex items-center justify-end gap-1.5 w-full flex-wrap">
+          <!-- Compact Live Center Coordinates Pill -->
+          <button
+            type="button"
+            onclick="copyCenterCoords()"
+            style="white-space: nowrap; flex-shrink: 0;"
+            class="pointer-events-auto inline-flex items-center gap-1.5 bg-white/95 backdrop-blur-md border border-slate-200/90 shadow-sm rounded-full px-3 py-1 text-[11px] font-mono text-slate-700 hover:text-slate-950 active:scale-95 transition shrink-0 whitespace-nowrap"
+            title="Tap to copy center coordinates"
+          >
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>
+            <span id="coord-readout">14.58167, 120.97669</span>
+            <svg class="w-3 h-3 text-slate-400 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
+
+          <!-- Compact Basemap Switcher Pill (Never stretches full width) -->
+          <div
+            style="width: max-content; flex-shrink: 0;"
+            class="pointer-events-auto inline-flex items-center gap-0.5 bg-white/95 backdrop-blur-md p-1 rounded-full shadow border border-slate-200 text-[10px] font-bold shrink-0 w-max"
+          >
+            <button
+              id="btn-layer-map"
+              type="button"
+              onclick="setBasemapMode('map')"
+              class="px-2.5 py-0.5 rounded-full bg-emerald-600 text-white transition whitespace-nowrap"
+            >Map</button>
+            <button
+              id="btn-layer-sat"
+              type="button"
+              onclick="setBasemapMode('sat')"
+              class="px-2.5 py-0.5 rounded-full text-slate-600 hover:text-slate-900 transition whitespace-nowrap"
+            >Sat</button>
+            <button
+              id="btn-layer-topo"
+              type="button"
+              onclick="setBasemapMode('topo')"
+              class="px-2.5 py-0.5 rounded-full text-slate-600 hover:text-slate-900 transition whitespace-nowrap"
+            >Topo</button>
+            <button
+              id="btn-layer-gray"
+              type="button"
+              onclick="setBasemapMode('gray')"
+              class="px-2.5 py-0.5 rounded-full text-slate-600 hover:text-slate-900 transition whitespace-nowrap"
+            >Gray</button>
+            <button
+              id="btn-reload-tiles"
+              type="button"
+              onclick="reloadMapTiles()"
+              title="Reload map tiles & recalculate viewport"
+              aria-label="Reload map tiles"
+              class="ml-0.5 px-2 py-0.5 rounded-full text-emerald-700 hover:bg-emerald-50 active:scale-90 font-extrabold transition whitespace-nowrap"
+            >&#8635;</button>
+          </div>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- Non-Intrusive Toast Banner -->
+    <div id="toast-container" class="fixed top-24 inset-x-0 z-50 flex justify-center px-4 pointer-events-none"></div>
+
+    <!-- Split Bottom Action Dock (Left: GPS + Pin Shop | Right: Ask Map + Queue) -->
+    <footer class="fixed inset-x-0 z-30 px-2.5 bottom-dock-safe pointer-events-none">
+      <div class="max-w-3xl mx-auto flex items-center justify-between gap-2">
+        <!-- Left Cluster -->
+        <div class="flex items-center gap-1.5 pointer-events-auto shrink-0">
+          <button
+            type="button"
+            onclick="locateUser()"
+            class="compact-dock-btn h-11 px-3 rounded-2xl bg-white/95 hover:bg-slate-50 active:scale-95 border border-slate-200/90 shadow-lg flex items-center justify-center gap-1.5 text-emerald-700 font-bold text-xs shrink-0 transition"
+            title="Center on live GPS location"
+          >
+            <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v3"/>
+              <path d="M12 19v3"/>
+              <path d="M2 12h3"/>
+              <path d="M19 12h3"/>
+              <circle cx="12" cy="12" r="7"/>
+            </svg>
+            <span class="hidden sm:inline">GPS</span>
+          </button>
+
+          <button
+            type="button"
+            onclick="openAddPlaceModal()"
+            class="compact-dock-btn h-11 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-bold text-xs sm:text-sm shadow-lg shadow-emerald-900/25 flex items-center justify-center gap-1.5 px-3.5 sm:px-4 shrink-0 transition"
+          >
+            <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="16"/>
+              <line x1="8" y1="12" x2="16" y2="12"/>
+            </svg>
+            <span class="whitespace-nowrap">Pin Shop</span>
+          </button>
+        </div>
+
+        <!-- Center Gap -->
+        <div class="flex-1 min-w-[1rem]"></div>
+
+        <!-- Right Cluster -->
+        <div class="flex items-center gap-1.5 pointer-events-auto shrink-0">
+          <button
+            type="button"
+            onclick="openAskMapModal()"
+            class="compact-dock-btn h-11 px-3 rounded-2xl bg-slate-900 hover:bg-slate-800 active:scale-95 text-white border border-slate-700/80 shadow-lg flex items-center gap-1.5 text-xs font-bold shrink-0 transition"
+            title="Silent Voice & Text Map Jump"
+          >
+            <svg class="w-4 h-4 text-emerald-400 shrink-0" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"/>
+            </svg>
+            <span class="whitespace-nowrap">Ask Map</span>
+          </button>
+
+          <button
+            type="button"
+            onclick="openQueueModal()"
+            class="compact-dock-btn h-11 px-2.5 sm:px-3 rounded-2xl bg-white/95 hover:bg-slate-50 active:scale-95 border border-slate-200/90 shadow-lg flex items-center gap-1.5 text-slate-800 font-bold text-xs shrink-0 transition"
+            title="Open Field Queue & Multi-Format Export (.osc, .geojson, .csv, .gpx)"
+          >
+            <span class="hidden sm:inline">Queue</span>
+            <span id="queue-badge" class="min-w-[20px] h-5 px-1.5 rounded-full bg-emerald-600 text-white text-[11px] font-extrabold flex items-center justify-center">0</span>
+          </button>
+        </div>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 1: SILENT MAP-ONLY 'ASK MAP' SPATIAL NAVIGATOR                  -->
+  <!-- ===================================================================== -->
+  <div id="modal-ask-map" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+      <div class="px-4 py-3 bg-slate-900 text-white flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <svg class="w-4 h-4 text-emerald-400" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"/>
+          </svg>
+          <div>
+            <h2 class="text-xs font-extrabold tracking-wide">Ask Map — Silent Spatial Jump</h2>
+            <p class="text-[10px] text-emerald-300">Voice (en-PH) or text fly-to &bull; Strictly silent, no audio clutter</p>
+          </div>
+        </div>
+        <button type="button" onclick="toggleModal('modal-ask-map', false)" class="w-7 h-7 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center font-bold text-xs">✕</button>
+      </div>
+
+      <!-- Quick-Jump Philippine Location Chips -->
+      <div class="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex items-center gap-1.5 overflow-x-auto custom-scroll">
+        <button type="button" onclick="executeSilentJump('Rizal Monument (Kilometer 0), Rizal Park')" class="px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-300 text-[11px] font-bold text-emerald-800 whitespace-nowrap shrink-0">KM 0 Rizal Monument</button>
+        <button type="button" onclick="executeSilentJump('Laguna Bel-Air, Santa Rosa, Laguna')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Santa Rosa (Laguna Bel-Air)</button>
+        <button type="button" onclick="executeSilentJump('Tanza, Cavite')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Tanza, Cavite</button>
+        <button type="button" onclick="executeSilentJump('Rizal Park (Luneta)')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Rizal Park</button>
+        <button type="button" onclick="executeSilentJump('Intramuros, Manila')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">Intramuros</button>
+        <button type="button" onclick="executeSilentJump('BGC High Street, Taguig')" class="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-emerald-400 text-[11px] font-semibold text-slate-700 whitespace-nowrap shrink-0">BGC High Street</button>
+      </div>
+
+      <!-- Voice & Text Query Form -->
+      <form onsubmit="handleAskMapSubmit(event)" class="p-4 bg-white flex items-center gap-2">
+        <button
+          id="btn-voice-mic"
+          type="button"
+          onclick="toggleVoiceInput()"
+          class="w-11 h-11 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center shrink-0 transition"
+          title="Speak Philippine place or street name"
+        >
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+          </svg>
+        </button>
+
+        <input
+          id="ask-map-input"
+          type="text"
+          placeholder="Say or type e.g. 'Rizal Monument' or 'Tanza Cavite'..."
+          class="flex-1 min-w-0 rounded-2xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        />
+
+        <button
+          type="submit"
+          class="h-11 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold shrink-0 transition"
+        >Fly</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 2: FIELD SURVEYING TOOLS (GNSS AVG, GPX TRACK, LOUPE, OFFLINE)  -->
+  <!-- ===================================================================== -->
+  <div id="modal-tools" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[88vh]">
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-extrabold text-slate-900">Field Surveying &amp; Offline Toolkit</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Quick region jumps, GNSS averaging, GPX tracks, 2x loupe &amp; tile cache</p>
+        </div>
+        <button type="button" onclick="toggleModal('modal-tools', false)" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <div class="p-5 overflow-y-auto custom-scroll space-y-4">
+        <!-- Quick Region Jumps -->
+        <div class="p-3.5 rounded-2xl border border-emerald-200 bg-emerald-50/50 space-y-2">
+          <div class="text-xs font-extrabold text-emerald-950">Quick Survey Region Jumps</div>
+          <div class="grid grid-cols-3 gap-1.5">
+            <button
+              type="button"
+              onclick="toggleModal('modal-tools', false); executeSilentJump('Rizal Monument (Kilometer 0), Rizal Park')"
+              class="py-2 px-2 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-100/70 text-[11px] font-bold text-emerald-900 text-center transition"
+            >Rizal Monument (KM 0)</button>
+            <button
+              type="button"
+              onclick="toggleModal('modal-tools', false); executeSilentJump('Laguna Bel-Air, Santa Rosa, Laguna')"
+              class="py-2 px-2 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-100/70 text-[11px] font-bold text-emerald-900 text-center transition"
+            >Santa Rosa (Bel-Air)</button>
+            <button
+              type="button"
+              onclick="toggleModal('modal-tools', false); executeSilentJump('Tanza, Cavite')"
+              class="py-2 px-2 rounded-xl bg-white border border-emerald-300 hover:bg-emerald-100/70 text-[11px] font-bold text-emerald-900 text-center transition"
+            >Tanza, Cavite</button>
+          </div>
+        </div>
+
+        <!-- Tool A: GNSS Waypoint Averaging (10s Static Hold) -->
+        <div class="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="text-xs font-extrabold text-slate-900">1. GNSS Waypoint Averaging (10s Static Hold)</div>
+              <div class="text-[11px] text-slate-500">Averages multiple GPS fixes to reduce storefront drift</div>
+            </div>
+            <button
+              id="btn-gnss-avg"
+              type="button"
+              onclick="startGnssAveraging()"
+              class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shrink-0 transition"
+            >Start 10s Hold</button>
+          </div>
+          <div id="gnss-avg-status" class="hidden rounded-xl bg-white border border-emerald-200 p-2.5 text-[11px] font-mono text-emerald-900 space-y-1">
+            <div class="flex justify-between">
+              <span id="gnss-sample-count">Samples: 0 / 10</span>
+              <span id="gnss-cep-est">Est. CEP: -- m</span>
+            </div>
+            <div class="w-full h-1.5 bg-emerald-100 rounded-full overflow-hidden">
+              <div id="gnss-progress-bar" class="h-full bg-emerald-600 transition-all duration-300" style="width: 0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool B: GPS Breadcrumb Track Recorder & GPX Export -->
+        <div class="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="text-xs font-extrabold text-slate-900">2. GPS Breadcrumb Track Recorder (.gpx)</div>
+              <div class="text-[11px] text-slate-500">Trace unmapped subdivision alleys &amp; TODA routes</div>
+            </div>
+            <span id="gpx-status-badge" class="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-slate-200 text-slate-700">Idle</span>
+          </div>
+          <div class="flex items-center justify-between text-xs font-mono bg-white border border-slate-200 rounded-xl px-3 py-2">
+            <span>Points: <strong id="gpx-point-count">0</strong></span>
+            <span>Dist: <strong id="gpx-distance-text">0 m</strong></span>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              id="btn-gpx-toggle"
+              type="button"
+              onclick="toggleGpxRecording()"
+              class="flex-1 py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition"
+            >Start Recording</button>
+            <button
+              type="button"
+              onclick="addSimulatedGpxWalkStep()"
+              class="py-2 px-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold"
+              title="Log crosshair point as track step"
+            >+Step</button>
+            <button
+              type="button"
+              onclick="downloadGpxFile()"
+              class="py-2 px-3 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-800 text-xs font-bold"
+            >Download .gpx</button>
+            <button
+              type="button"
+              onclick="clearGpxTrack()"
+              class="py-2 px-2.5 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-bold"
+            >Clear</button>
+          </div>
+        </div>
+
+        <!-- Tool C: Sub-Meter Crosshair Loupe Toggle -->
+        <div class="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-xs font-extrabold text-slate-900">3. Sub-Meter Crosshair Loupe (2x Inset)</div>
+            <div class="text-[11px] text-slate-500">Magnifies building footprints around reticle while panning</div>
+          </div>
+          <button
+            id="btn-toggle-loupe"
+            type="button"
+            onclick="toggleCrosshairLoupe()"
+            class="px-3.5 py-2 rounded-xl bg-white border border-slate-300 text-slate-800 text-xs font-bold shrink-0 transition"
+          >Off</button>
+        </div>
+
+        <!-- Tool D: Offline Tile Pre-Fetcher & Installable PWA -->
+        <div class="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/70 space-y-2.5">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="text-xs font-extrabold text-slate-900">4. Offline Map Tile Pre-Fetcher &amp; PWA</div>
+              <div class="text-[11px] text-slate-500">Cache visible tiles (Z15–17) before zero-signal runs</div>
+            </div>
+            <button
+              id="btn-prefetch-tiles"
+              type="button"
+              onclick="prefetchVisibleTiles()"
+              class="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shrink-0 transition"
+            >Cache View</button>
+          </div>
+          <div id="tile-cache-status" class="text-[11px] font-mono text-slate-600">
+            Cache status: Ready &bull; PWA Mode: <span id="pwa-status-text">Active</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 3: PIN NEW SHOP / LANDMARK (WITH AUTO-ADDRESS & LOCAL PHOTO)    -->
+  <!-- ===================================================================== -->
+  <div id="modal-add-place" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-extrabold text-slate-900">Pin New Shop or Landmark</h2>
+          <p id="add-place-coords" class="text-xs font-mono text-emerald-700 mt-0.5">14.581670, 120.976690</p>
+        </div>
+        <button type="button" onclick="toggleModal('modal-add-place', false)" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <div class="p-5 overflow-y-auto custom-scroll space-y-4">
+        <!-- 25-Meter Duplicate / Proximity Guard Warning Banner -->
+        <div id="proximity-warning-banner" class="hidden rounded-2xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 flex items-start gap-2.5">
+          <svg class="w-4 h-4 text-amber-600 shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <div id="proximity-warning-text" class="leading-relaxed"></div>
+        </div>
+
+        <!-- 1. Philippine Presets + Quick Filter Input -->
+        <div>
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <label class="block text-xs font-bold uppercase tracking-wider text-slate-500">1. Select Philippine Preset (<span id="preset-count-label">50</span> Choices)</label>
+            <input
+              id="input-preset-filter"
+              type="text"
+              oninput="filterCategoryPresets(this.value)"
+              placeholder="Filter (e.g. TODA, Mall, Hotel)..."
+              class="w-44 sm:w-52 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
+          <div id="preset-grid" class="grid grid-cols-3 gap-2"></div>
+        </div>
+
+        <!-- 2. Shop / Office / Terminal Name -->
+        <div>
+          <label for="input-place-name" class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">2. Place, Office, or Terminal Name *</label>
+          <input
+            id="input-place-name"
+            type="text"
+            placeholder="e.g., Santa Rosa Integrated Terminal or BIR RDO 57"
+            class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+        </div>
+
+        <!-- 3. Quick Payment & Hours Attribute Chips -->
+        <div>
+          <label class="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">3. Quick Field Tags</label>
+          <div class="flex flex-wrap gap-1.5">
+            <button
+              id="chip-gcash"
+              type="button"
+              onclick="toggleQuickTagChip('gcash')"
+              class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 transition"
+            >+ GCash</button>
+            <button
+              id="chip-maya"
+              type="button"
+              onclick="toggleQuickTagChip('maya')"
+              class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 transition"
+            >+ Maya</button>
+            <button
+              id="chip-247"
+              type="button"
+              onclick="toggleQuickTagChip('hours247')"
+              class="px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 transition"
+            >+ Open 24/7</button>
+          </div>
+        </div>
+
+        <!-- 4. Auto-Filled Structured Philippine Address Tags (Including Purok / Subdivision) -->
+        <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-extrabold uppercase tracking-wider text-slate-600">4. Philippine Address Auto-Fill</span>
+            <span id="addr-lookup-status" class="text-[10px] font-mono text-emerald-700">Auto-filled</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 mb-0.5">Purok / Subd. / Phase</label>
+              <input id="input-addr-suburb" type="text" oninput="updateOsmTagPreview()" placeholder="e.g., Phase 2 / Purok 4" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 mb-0.5">Barangay</label>
+              <input id="input-addr-brgy" type="text" oninput="updateOsmTagPreview()" placeholder="Barangay" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 mb-0.5">City / Municipality</label>
+              <input id="input-addr-city" type="text" oninput="updateOsmTagPreview()" placeholder="City" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 mb-0.5">Province</label>
+              <input id="input-addr-prov" type="text" oninput="updateOsmTagPreview()" placeholder="Province" class="w-full rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 5. Local-Only Storefront Reference Photo (IndexedDB) -->
+        <div class="p-3 rounded-2xl bg-amber-50/60 border border-amber-200/80 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <div class="text-xs font-extrabold text-amber-950">5. Local Reference Photo (On-Device Only)</div>
+              <div class="text-[10px] text-amber-800">Saved in local IndexedDB for desk review &bull; Never uploaded to OSM</div>
+            </div>
+            <label class="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold cursor-pointer shrink-0">
+              <span>Snap / Attach</span>
+              <input id="input-place-photo" type="file" accept="image/*" capture="environment" onchange="handlePlacePhotoSelect(event)" class="hidden" />
+            </label>
+          </div>
+          <div id="photo-preview-wrap" class="hidden flex items-center gap-2.5 pt-1">
+            <img id="photo-preview-img" alt="Storefront preview" class="w-14 h-14 rounded-xl object-cover border border-amber-300" />
+            <div class="text-[11px] text-amber-900 flex-1">
+              <div class="font-bold">Reference photo attached</div>
+              <button type="button" onclick="clearPendingPhoto()" class="text-rose-700 font-bold underline text-[10px]">Remove photo</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 6. Primary OSM Tag & Custom Key=Value Tag Editor -->
+        <div class="space-y-2">
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 mb-0.5">Primary Tag Key</label>
+              <input id="input-tag-key" type="text" value="shop" oninput="updateOsmTagPreview()" class="w-full rounded-xl border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-900" />
+            </div>
+            <div>
+              <label class="block text-[10px] font-bold text-slate-500 mb-0.5">Primary Tag Value</label>
+              <input id="input-tag-val" type="text" value="convenience" oninput="updateOsmTagPreview()" class="w-full rounded-xl border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-900" />
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-1">
+            <span class="text-[10px] font-extrabold uppercase tracking-wider text-slate-500">Custom Extra OSM Tags (operator, route_ref, phone...)</span>
+            <button
+              type="button"
+              onclick="addCustomTagRow()"
+              class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-bold transition"
+            >+ Add Tag</button>
+          </div>
+          <div id="custom-tags-container" class="space-y-1.5"></div>
+        </div>
+
+        <!-- Live Generated OSM Tag Preview -->
+        <div class="rounded-xl bg-emerald-50/80 border border-emerald-200 p-2.5">
+          <div class="text-[10px] font-extrabold uppercase tracking-wider text-emerald-900 mb-0.5">Generated OSM Tags</div>
+          <div id="osm-tag-preview" class="font-mono text-[11px] text-emerald-800 break-all">shop=convenience</div>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-2">
+        <button type="button" onclick="toggleModal('modal-add-place', false)" class="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200/70">Cancel</button>
+        <button type="button" onclick="saveNewPlaceToQueue()" class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm">Save to Queue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 4: EXISTING OSM POI AUDIT & VERIFICATION DRAWER                 -->
+  <!-- ===================================================================== -->
+  <div id="modal-audit-poi" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 id="audit-poi-title" class="text-base font-extrabold text-slate-900">Verify Existing OSM Place</h2>
+          <p id="audit-poi-meta" class="text-xs font-mono text-slate-500 mt-0.5">OSM Node #0</p>
+        </div>
+        <button type="button" onclick="toggleModal('modal-audit-poi', false)" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <div class="p-5 space-y-3.5 text-xs">
+        <p class="text-slate-600">
+          Field-verify this mapped place to keep OpenStreetMap fresh (<code class="font-mono bg-slate-100 px-1 py-0.5 rounded">check_date=2026-11-28</code>).
+        </p>
+
+        <div class="grid grid-cols-1 gap-2">
+          <button
+            type="button"
+            onclick="queuePoiAudit('verified')"
+            class="p-3 rounded-2xl border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-left flex items-center justify-between transition"
+          >
+            <div>
+              <div class="font-extrabold text-emerald-950">Still Open &amp; Active</div>
+              <div class="text-[11px] text-emerald-800 font-mono">Adds check_date=2026-11-28</div>
+            </div>
+            <span class="text-emerald-700 font-extrabold text-sm">&rarr;</span>
+          </button>
+
+          <button
+            type="button"
+            onclick="queuePoiAudit('gcash')"
+            class="p-3 rounded-2xl border border-sky-300 bg-sky-50 hover:bg-sky-100 text-left flex items-center justify-between transition"
+          >
+            <div>
+              <div class="font-extrabold text-sky-950">Verified Open + Accepts GCash</div>
+              <div class="text-[11px] text-sky-800 font-mono">Adds payment:gcash=yes &amp; check_date</div>
+            </div>
+            <span class="text-sky-700 font-extrabold text-sm">&rarr;</span>
+          </button>
+
+          <button
+            type="button"
+            onclick="queuePoiAudit('closed')"
+            class="p-3 rounded-2xl border border-rose-300 bg-rose-50 hover:bg-rose-100 text-left flex items-center justify-between transition"
+          >
+            <div>
+              <div class="font-extrabold text-rose-950">Permanently Closed / Vacant</div>
+              <div class="text-[11px] text-rose-800 font-mono">Marks disused:shop=yes &amp; check_date</div>
+            </div>
+            <span class="text-rose-700 font-extrabold text-sm">&rarr;</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 5: ROAD SURFACE, LANES, ONE-WAY & UNNAMED STREET EDITOR         -->
+  <!-- ===================================================================== -->
+  <div id="modal-road" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-md rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-extrabold text-slate-900">Tag Street &amp; Road Attributes</h2>
+          <p id="road-coords-meta" class="text-xs font-mono text-amber-700 mt-0.5">Center: 14.58167, 120.97669</p>
+        </div>
+        <button type="button" onclick="toggleModal('modal-road', false)" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <div class="p-5 space-y-3.5 text-xs">
+        <div>
+          <label class="block font-bold uppercase tracking-wider text-slate-500 mb-1">Official Street / Subdivision Road Name *</label>
+          <input id="input-road-name" type="text" placeholder="e.g., Sampaguita Street or Phase 2 Access Road" class="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-2.5">
+          <div>
+            <label class="block font-bold text-slate-600 mb-1">Road Class (highway)</label>
+            <select id="select-road-highway" class="w-full rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs font-mono text-slate-900">
+              <option value="residential">residential</option>
+              <option value="unclassified">unclassified</option>
+              <option value="service">service (alley/drive)</option>
+              <option value="track">track (barangay/farm)</option>
+            </select>
+          </div>
+          <div>
+            <label class="block font-bold text-slate-600 mb-1">Surface Type</label>
+            <select id="select-road-surface" class="w-full rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs font-mono text-slate-900">
+              <option value="concrete">concrete (sementado)</option>
+              <option value="asphalt">asphalt</option>
+              <option value="gravel">gravel</option>
+              <option value="unpaved">unpaved / dirt</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2.5 items-center">
+          <div>
+            <label class="block font-bold text-slate-600 mb-1">Lanes</label>
+            <select id="select-road-lanes" class="w-full rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs font-mono text-slate-900">
+              <option value="2">2 lanes</option>
+              <option value="1">1 lane</option>
+              <option value="4">4 lanes</option>
+            </select>
+          </div>
+          <label class="flex items-center gap-2 pt-4 cursor-pointer">
+            <input id="check-road-oneway" type="checkbox" class="w-4 h-4 rounded text-emerald-600" />
+            <span class="font-bold text-slate-800">One-Way Street (<code class="font-mono">oneway=yes</code>)</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
+        <button type="button" onclick="toggleModal('modal-road', false)" class="px-4 py-2 rounded-xl font-bold text-slate-600">Cancel</button>
+        <button type="button" onclick="saveRoadAttributeToQueue()" class="px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold shadow-sm">Queue Road Tag</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 6: MULTI-FORMAT FIELD QUEUE & EXPORT (.OSC, .GEOJSON, .CSV, .GPX) -->
+  <!-- ===================================================================== -->
+  <div id="modal-queue" class="hidden fixed inset-0 z-50 bg-slate-950/50 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-xl rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-extrabold text-slate-900">Field Queue &amp; Multi-Format Export (<span id="queue-count-text">0</span>)</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Offline-persistent &bull; Export .osc, .geojson, .csv, or .gpx</p>
+        </div>
+        <button type="button" onclick="toggleModal('modal-queue', false)" class="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center font-bold">✕</button>
+      </div>
+
+      <div class="p-5 overflow-y-auto custom-scroll space-y-4">
+        <div id="queue-list-container" class="space-y-2"></div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <span class="text-xs font-bold uppercase tracking-wider text-slate-500">OSM API v0.6 Change XML (.osc)</span>
+            <button type="button" onclick="copyOsmXml()" class="text-xs font-bold text-emerald-700 hover:text-emerald-800">Copy XML</button>
+          </div>
+          <pre id="osm-xml-output" class="bg-slate-900 text-emerald-300 font-mono text-[11px] p-3.5 rounded-2xl overflow-x-auto max-h-40 leading-relaxed"></pre>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-2">
+        <button type="button" onclick="clearAllQueue()" class="px-2.5 py-2 rounded-xl text-xs font-bold text-rose-600 hover:bg-rose-50">Clear All</button>
+
+        <div class="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onclick="sendQueueToJosm()"
+            title="Send queued changes directly to JOSM Remote Control on 127.0.0.1:8111"
+            class="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 text-xs font-extrabold shadow-2xs transition"
+          >Send to JOSM</button>
+          <button type="button" onclick="downloadOscFile()" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-2xs">.osc</button>
+          <button type="button" onclick="downloadGeoJsonFile()" class="px-3 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-bold">.geojson</button>
+          <button type="button" onclick="downloadCsvFile()" class="px-3 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-bold">.csv</button>
+          <button type="button" onclick="downloadGpxFile()" class="px-3 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 text-xs font-bold">.gpx</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 7: COMPLIANCE, ODbL 1.0 & NAVIGATION HANDOFF NOTICE             -->
+  <!-- ===================================================================== -->
+  <div id="modal-disclaimer" class="hidden fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[88vh]">
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-amber-50/70">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+              <line x1="12" y1="9" x2="12" y2="13"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+          </div>
+          <div>
+            <h2 class="text-base font-extrabold text-slate-900">Disclaimer &amp; Usage Notice</h2>
+            <p class="text-[11px] font-medium text-amber-800">ODbL 1.0 &bull; "As-Is" Field Tool &bull; External Routing</p>
+          </div>
+        </div>
+        <button type="button" onclick="acknowledgeDisclaimer()" class="w-8 h-8 rounded-xl bg-white/80 hover:bg-white text-slate-600 flex items-center justify-center font-bold border border-amber-200/70">✕</button>
+      </div>
+
+      <div class="p-5 overflow-y-auto custom-scroll space-y-3 text-xs text-slate-700 leading-relaxed">
+        <div class="p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+          <div class="font-extrabold text-slate-900">1. "As-Is" Field Surveying Disclaimer</div>
+          <p>
+            <strong>NasaNaTo</strong> is a community OpenStreetMap field data-collection utility provided strictly <strong>&ldquo;as is&rdquo; without warranties of any kind</strong>. Never operate this tool while driving or rely on it for emergency navigation.
+          </p>
+        </div>
+
+        <div class="p-3 rounded-2xl bg-emerald-50/70 border border-emerald-200 space-y-1.5">
+          <div class="font-extrabold text-emerald-950">2. External Turn-by-Turn Navigation</div>
+          <p class="text-emerald-900">Open current crosshair coordinates directly in external navigation apps:</p>
+          <div class="flex flex-wrap gap-2">
+            <a id="link-ext-gmaps" href="https://maps.google.com/?q=14.58167,120.97669" target="_blank" rel="noopener noreferrer" class="px-3 py-1.5 rounded-xl bg-white border border-emerald-300 text-emerald-900 font-bold text-xs hover:bg-emerald-100/60">Open in Google Maps &nearr;</a>
+            <a id="link-ext-waze" href="https://waze.com/ul?ll=14.58167,120.97669&navigate=yes" target="_blank" rel="noopener noreferrer" class="px-3 py-1.5 rounded-xl bg-white border border-emerald-300 text-emerald-900 font-bold text-xs hover:bg-emerald-100/60">Open in Waze &nearr;</a>
+          </div>
+        </div>
+
+        <div class="p-3 rounded-2xl bg-amber-50/80 border border-amber-200 space-y-1">
+          <div class="font-extrabold text-amber-950">3. OpenStreetMap ODbL 1.0 Copyright Compliance</div>
+          <p class="text-amber-900">
+            Map data &copy; OpenStreetMap contributors (ODbL 1.0). Never copy coordinates, road names, or shop details from Google Maps, Waze, or proprietary maps into OpenStreetMap. Only contribute direct on-the-ground field observations.
+          </p>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 border-t border-slate-100 bg-slate-50 flex justify-end">
+        <button type="button" onclick="acknowledgeDisclaimer()" class="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold">I Understand</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- JAVASCRIPT APPLICATION ENGINE                                         -->
+  <!-- ===================================================================== -->
+  <script>
+    // Default Launch Center: Rizal Monument (Kilometer 0), Rizal Park, Manila
+    const DEFAULT_CENTER = [14.58167, 120.97669];
+    const DEFAULT_ZOOM = 17;
+    const SURVEY_DATE = '2026-11-28';
+    const STORAGE_KEY = 'nasanato_field_queue_v2';
+    const GPX_STORAGE_KEY = 'nasanato_gpx_track_v2';
+    const DISCLAIMER_ACK_KEY = 'nasanato_disclaimer_ack_v2';
+    const TILE_CACHE_NAME = 'nasanato-tiles-v1';
+
+    // Esri-First Multi-Tier Resilient Tile Providers (zero 403 blocks in mobile WebViews & iframes)
+    const BASEMAP_PROVIDERS = {
+      map: {
+        label: 'Esri Street Map',
+        tiers: [
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          },
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          },
+          {
+            url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+            subdomains: 'abcd',
+            maxZoom: 20
+          }
+        ]
+      },
+      sat: {
+        label: 'Satellite + Labels',
+        tiers: [
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            overlayUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          },
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          }
+        ]
+      },
+      topo: {
+        label: 'Esri Topographic',
+        tiers: [
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          },
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          }
+        ]
+      },
+      gray: {
+        label: 'Light Gray Canvas',
+        tiers: [
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+            overlayUrl: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          },
+          {
+            url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+            maxZoom: 19
+          }
+        ]
+      }
+    };
+
+    // Philippine POI, Retail, Civic, Transit & Service Presets
+    const CATEGORY_PRESETS = [
+      { id: 'sari_sari', label: 'Sari-Sari Store', keywords: 'tindahan corner store', key: 'shop', val: 'convenience', extra: { convenience: 'sari_sari' }, svg: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>' },
+      { id: 'convenience_store', label: 'Convenience Store', keywords: '7-11 7 eleven ministop uncle johns alfamart lawson', key: 'shop', val: 'convenience', extra: {}, svg: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 4v6"/><path d="M16 4v6"/>' },
+      { id: 'mini_grocery', label: 'Mini-Grocery', keywords: 'minimart talipapa grocery', key: 'shop', val: 'convenience', extra: { retail: 'grocery' }, svg: '<circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>' },
+      { id: 'supermarket', label: 'Supermarket', keywords: 'sm hypermarket puregold robinsons savemore waltermart grocery', key: 'shop', val: 'supermarket', extra: {}, svg: '<circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/><path d="M10 9h7"/>' },
+      { id: 'mall', label: 'Mall / Shopping Center', keywords: 'sm ayala robinsons vistamall plaza', key: 'shop', val: 'mall', extra: {}, svg: '<path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/>' },
+      { id: 'market', label: 'Market / Talipapa / Wet Market', keywords: 'palengke public market wet market talipapa bazaar', key: 'amenity', val: 'marketplace', extra: {}, svg: '<path d="M3 7l2-4h14l2 4"/><path d="M3 7a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0"/><path d="M5 10v11h14V10"/>' },
+      { id: 'ukay_tiangge', label: 'Ukay-ukay / Wagwagan / Tiangge', keywords: 'thrift secondhand second hand clothes bale ukay tiangge wagwagan', key: 'shop', val: 'second_hand', extra: { retail: 'tiangge' }, svg: '<path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M9 11l3 3 3-3"/>' },
+      { id: 'carinderia', label: 'Carinderia / Turo-turo', keywords: 'turo-turo eatery pares silog', key: 'amenity', val: 'fast_food', extra: { cuisine: 'filipino' }, svg: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7"/>' },
+      { id: 'pharmacy', label: 'Botika / Pharmacy', keywords: 'mercury drug watsons tgp generics drugstore', key: 'amenity', val: 'pharmacy', extra: {}, svg: '<rect x="3" y="3" width="18" height="18" rx="4"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>' },
+      { id: 'bakery', label: 'Panaderya', keywords: 'bakery pandesal bakeshop goldilocks red ribbon', key: 'shop', val: 'bakery', extra: {}, svg: '<path d="M4 11a8 8 0 0 1 16 0v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-5z"/>' },
+      { id: 'water', label: 'Water Refilling', keywords: 'purified mineral water station', key: 'shop', val: 'water', extra: {}, svg: '<path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/>' },
+      { id: 'cafe', label: 'Milk Tea / Cafe', keywords: 'coffee shop starbucks macao coco', key: 'amenity', val: 'cafe', extra: {}, svg: '<path d="M17 8h1a4 4 0 1 1 0 8h-1"/><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"/>' },
+      { id: 'hardware', label: 'Hardware', keywords: 'construction electrical plumbing wilcon handyman', key: 'shop', val: 'hardware', extra: {}, svg: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>' },
+      { id: 'salon', label: 'Barber / Salon', keywords: 'barbershop parlor haircut', key: 'shop', val: 'hairdresser', extra: {}, svg: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/>' },
+      { id: 'massage', label: 'Massage / Spa', keywords: 'nuat thai wellness hilot spa', key: 'shop', val: 'massage', extra: {}, svg: '<path d="M12 3c2.5 3 4 5.5 4 8a4 4 0 1 1-8 0c0-2.5 1.5-5 4-8z"/><path d="M5 19c2-1.5 4.5-2 7-2s5 .5 7 2"/>' },
+      { id: 'laundry', label: 'Laundry Shop', keywords: 'wash dry fold labada', key: 'shop', val: 'laundry', extra: {}, svg: '<rect x="4" y="2" width="16" height="20" rx="2"/><circle cx="12" cy="13" r="5"/>' },
+      { id: 'vulcanizing', label: 'Vulcanizing', keywords: 'tire repair gulong', key: 'shop', val: 'tyres', extra: { 'service:bicycle:repair': 'yes' }, svg: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/>' },
+      { id: 'auto_repair', label: 'Auto / Bike Repair Shop', keywords: 'talyer mechanic carwash motor repair bike repair bisikleta bicycle repair', key: 'shop', val: 'car_repair', extra: { 'service:bicycle:repair': 'yes' }, svg: '<path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>' },
+      { id: 'battery_outlet', label: 'Battery Outlet', keywords: 'car battery 12v accumulator auto battery', key: 'shop', val: 'car_parts', extra: { car_parts: 'battery' }, svg: '<rect x="2" y="7" width="20" height="12" rx="2"/><line x1="6" y1="4" x2="6" y2="7"/><line x1="18" y1="4" x2="18" y2="7"/><line x1="7" y1="13" x2="11" y2="13"/><line x1="9" y1="11" x2="9" y2="15"/><line x1="14" y1="13" x2="18" y2="13"/>' },
+      { id: 'car_wash', label: 'Car Wash', keywords: 'carwash detailing auto wash', key: 'amenity', val: 'car_wash', extra: {}, svg: '<path d="M7 16l2-6h6l2 6"/><path d="M5 16h14v3a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-3z"/><path d="M12 3v3"/><path d="M8 5l1 2"/><path d="M16 5l-1 2"/>' },
+      { id: 'gas_station', label: 'Gasoline Station', keywords: 'gas station petron shell caltex phoenix unioil fuel', key: 'amenity', val: 'fuel', extra: {}, svg: '<path d="M3 22h12"/><path d="M4 9h10v13H4z"/><path d="M14 13h2a2 2 0 0 1 2 2v3a2 2 0 0 0 4 0v-7l-3-3"/>' },
+      { id: 'ev_charging', label: 'EV Charging Station', keywords: 'electric vehicle charger ev charging', key: 'amenity', val: 'charging_station', extra: { motorcar: 'yes' }, svg: '<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>' },
+      { id: 'vehicle_outlet', label: 'Car / Vehicle Outlet', keywords: 'car dealership auto dealer motorcycle dealer showroom', key: 'shop', val: 'car', extra: {}, svg: '<path d="M5 17h14v-5l-2-4H7l-2 4v5z"/><circle cx="7.5" cy="17" r="2"/><circle cx="16.5" cy="17" r="2"/>' },
+      { id: 'pawn_shop', label: 'Pawn Shop / Sanglaan', keywords: 'sanglaan pawnshop cebuana mlhuillier villarica palawan', key: 'shop', val: 'pawnbroker', extra: {}, svg: '<circle cx="12" cy="12" r="8"/><path d="M9 16V8h4a2.5 2.5 0 0 1 0 5H9"/>' },
+      { id: 'pedicab_terminal', label: 'Pedicab Terminal', keywords: 'padyak sikad cycle rickshaw terminal toda', key: 'amenity', val: 'taxi', extra: { taxi: 'pedicab' }, svg: '<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M6 17l4-9h5l3 9"/><path d="M10 8l-2-4H5"/>' },
+      { id: 'tricycle_terminal', label: 'Tricycle Terminal', keywords: 'toda trike tricycle stand terminal', key: 'amenity', val: 'taxi', extra: { taxi: 'tricycle' }, svg: '<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M6 17l3-8h6l3 8"/><path d="M9 9V6h6v3"/>' },
+      { id: 'jeepney_terminal', label: 'Jeepney Terminal', keywords: 'jeep terminal puj jeepney stop', key: 'amenity', val: 'bus_station', extra: { bus: 'jeepney', public_transport: 'station' }, svg: '<rect x="3" y="6" width="18" height="11" rx="2"/><path d="M3 12h18"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="19" r="2"/>' },
+      { id: 'bus_terminal', label: 'Bus Terminal', keywords: 'bus station terminal provincial bus', key: 'amenity', val: 'bus_station', extra: { public_transport: 'station', bus: 'yes' }, svg: '<rect x="4" y="4" width="16" height="14" rx="2"/><path d="M4 13h16"/><circle cx="8" cy="20" r="1.8"/><circle cx="16" cy="20" r="1.8"/>' },
+      { id: 'uv_terminal', label: 'UV Express / Van Terminal', keywords: 'uv express van terminal fx shuttle', key: 'amenity', val: 'bus_station', extra: { public_transport: 'station', minibus: 'yes' }, svg: '<path d="M3 15V9a2 2 0 0 1 2-2h11l4 4v4a2 2 0 0 1-2 2h-1"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>' },
+      { id: 'grand_terminal', label: 'Grand Terminal Complex', keywords: 'pitx integrated transport hub terminal', key: 'amenity', val: 'bus_station', extra: { public_transport: 'station', building: 'transportation', terminal: 'hub' }, svg: '<path d="M2 20h20"/><path d="M4 20V8l8-4 8 4v12"/><rect x="8" y="12" width="8" height="8"/><line x1="12" y1="12" x2="12" y2="20"/>' },
+      { id: 'hospital', label: 'Hospital', keywords: 'medical center ospital infirmary emergency', key: 'amenity', val: 'hospital', extra: { healthcare: 'hospital' }, svg: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8"/><path d="M8 12h8"/>' },
+      { id: 'police_station', label: 'Police Station', keywords: 'pnp police presinto patrol station', key: 'amenity', val: 'police', extra: {}, svg: '<path d="M12 2l8 4v6c0 5.25-3.4 9.74-8 11-4.6-1.26-8-5.75-8-11V6l8-4z"/><path d="M12 8v8"/><path d="M8 12h8"/>' },
+      { id: 'fire_station', label: 'Fire Station', keywords: 'bfp fire department bombero', key: 'amenity', val: 'fire_station', extra: {}, svg: '<path d="M12 2c2.5 3.5 5 5.5 5 9a5 5 0 0 1-10 0c0-2.2 1.2-4 2.5-5.5C9.5 7.5 11 9 11 9s1-4.5 1-7z"/>' },
+      { id: 'school_univ', label: 'School / University', keywords: 'paaralan elementary high school college university campus', key: 'amenity', val: 'school', extra: {}, svg: '<path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1.66 2.69 3 6 3s6-1.34 6-3v-5"/>' },
+      { id: 'dance_studio', label: 'Dance Studio', keywords: 'dance hiphop ballet studio choreography', key: 'leisure', val: 'dance', extra: {}, svg: '<circle cx="12" cy="5" r="2"/><path d="M12 7v6l-4 7"/><path d="M12 13l4 7"/><path d="M7 10l5 2 5-2"/>' },
+      { id: 'art_studio', label: 'Art Studio', keywords: 'painting craft pottery art gallery studio', key: 'leisure', val: 'art_studio', extra: { amenity: 'arts_centre' }, svg: '<path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><circle cx="11" cy="11" r="1.5"/>' },
+      { id: 'park_pasyalan', label: 'Park / Pasyalan', keywords: 'pasyalan plaza park green space playground', key: 'leisure', val: 'park', extra: {}, svg: '<path d="M12 3L6 13h4l-3 6h10l-3-6h4L12 3z"/><line x1="12" y1="19" x2="12" y2="22"/>' },
+      { id: 'amusement_center', label: 'Amusement / Entertainment', keywords: 'arcade bowling theme park entertainment center', key: 'leisure', val: 'amusement_arcade', extra: {}, svg: '<rect x="2" y="6" width="20" height="12" rx="4"/><path d="M6 12h4"/><path d="M8 10v4"/><circle cx="15" cy="11" r="1"/><circle cx="18" cy="13" r="1"/>' },
+      { id: 'restaurant_fastfood', label: 'Restaurant / Fast Food', keywords: 'kainan restaurant fastfood grill dining', key: 'amenity', val: 'restaurant', extra: {}, svg: '<path d="M3 11h18"/><path d="M5 11a7 7 0 0 1 14 0"/><path d="M4 15h16"/><path d="M5 18h14"/>' },
+      { id: 'burger_stand', label: 'Burger Stand', keywords: 'burger kiosk snack stand street food', key: 'amenity', val: 'fast_food', extra: { cuisine: 'burger' }, svg: '<path d="M5 10a7 7 0 0 1 14 0H5z"/><line x1="4" y1="13" x2="20" y2="13"/><path d="M5 16h14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2z"/>' },
+      { id: 'building', label: 'Building', keywords: 'gusali commercial building office building structure', key: 'building', val: 'yes', extra: {}, svg: '<rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 7h2"/><path d="M13 7h2"/><path d="M9 11h2"/><path d="M13 11h2"/><path d="M9 15h2"/><path d="M13 15h2"/>' },
+      { id: 'apartments', label: 'Apartments', keywords: 'apartment condo residential units paupahan', key: 'building', val: 'apartments', extra: {}, svg: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M9 6h2"/><path d="M13 6h2"/><path d="M9 10h2"/><path d="M13 10h2"/><path d="M9 14h2"/><path d="M13 14h2"/><path d="M10 22v-4h4v4"/>' },
+      { id: 'resort', label: 'Resort', keywords: 'swimming pool private pool hot spring staycation', key: 'leisure', val: 'resort', extra: {}, svg: '<path d="M2 18c2-1 4-1 6 0s4 1 6 0 4-1 6 0"/><path d="M2 22c2-1 4-1 6 0s4 1 6 0 4-1 6 0"/><path d="M12 14V4"/><path d="M12 4c3 0 5 1.5 6 4-2.5-.5-4.5 0-6 1"/><path d="M12 4C9 4 7 5.5 6 8c2.5-.5 4.5 0 6 1"/>' },
+      { id: 'gym', label: 'Gym / Fitness', keywords: 'anytime fitness bakal gym workout crossfit', key: 'leisure', val: 'fitness_centre', extra: {}, svg: '<path d="M6.5 6.5h11"/><path d="M6.5 17.5h11"/><path d="M3 9v6"/><path d="M6 7v10"/><path d="M18 7v10"/><path d="M21 9v6"/>' },
+      { id: 'monument', label: 'Monument', keywords: 'bantayog shrine statue memorial obelisk', key: 'historic', val: 'monument', extra: {}, svg: '<path d="M9 21h6"/><path d="M10 21V9l2-5 2 5v12"/><line x1="8" y1="13" x2="16" y2="13"/>' },
+      { id: 'historical_site', label: 'Historical Site', keywords: 'heritage site battleground marker ruin fort', key: 'historic', val: 'archaeological_site', extra: { heritage: 'yes' }, svg: '<path d="M4 20h16"/><path d="M6 20v-6l3-2 3 2v6"/><path d="M14 20v-9l4-3 2 2v10"/>' },
+      { id: 'ancestral_home', label: 'Ancestral Home', keywords: 'bahay na bato heritage house old house mansion', key: 'historic', val: 'heritage', extra: { building: 'house' }, svg: '<path d="M3 10l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/><path d="M8 10v4"/><path d="M16 10v4"/>' },
+      { id: 'museum', label: 'Museum', keywords: 'gallery exhibition heritage museum archive', key: 'tourism', val: 'museum', extra: {}, svg: '<path d="M3 20h18"/><path d="M5 10h14"/><path d="M7 10v10"/><path d="M12 10v10"/><path d="M17 10v10"/><polygon points="12 3 21 8 3 8"/>' },
+      { id: 'heritage_landmark', label: 'Heritage Landmark', keywords: 'plaza clocktower arch landmark', key: 'tourism', val: 'attraction', extra: { heritage: 'yes' }, svg: '<path d="M12 2l2.4 7.4L22 12l-7.6 2.6L12 22l-2.4-7.4L2 12l7.6-2.6z"/>' },
+      { id: 'dormitory', label: 'Dorm / Boarding House', keywords: 'bedspace apartment paupahan student dorm', key: 'building', val: 'dormitory', extra: { amenity: 'dormitory' }, svg: '<path d="M3 20v-8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v8"/><path d="M3 16h18"/><path d="M7 10V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/>' },
+      { id: 'airbnb_homestay', label: 'Airbnb / Homestay', keywords: 'transient vacation rental guest house', key: 'tourism', val: 'guest_house', extra: { short_term_rental: 'yes' }, svg: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/><circle cx="12" cy="14" r="2"/>' },
+      { id: 'hotel', label: 'Hotel', keywords: 'resort hotel suites lodge check-in', key: 'tourism', val: 'hotel', extra: {}, svg: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h2"/><path d="M14 7h2"/><path d="M8 11h2"/><path d="M14 11h2"/><path d="M10 21v-4h4v4"/>' },
+      { id: 'motel', label: 'Motel / Drive-In', keywords: 'motor lodge drive in inn', key: 'tourism', val: 'motel', extra: {}, svg: '<path d="M3 18v-6l3-3h12l3 3v6"/><path d="M3 14h18"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>' },
+      { id: 'inn_bnb', label: 'Inn / Bed & Breakfast', keywords: 'pension house hostel transient inn', key: 'tourism', val: 'bed_and_breakfast', extra: {}, svg: '<path d="M2 18v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5"/><path d="M2 15h20"/><path d="M6 11V8a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v3"/>' }
+    ];
+
+    // Built-in Philippine Places & Speech-to-Text Aliases
+    const PH_REFERENCE_PLACES = [
+      {
+        id: 1000001,
+        name: 'Rizal Monument (Kilometer 0), Rizal Park',
+        aliases: ['km 0', 'kilometer 0', 'rizal monument', 'luneta monument', 'new zealand monument', 'result monument'],
+        cat: 'monument',
+        lat: 14.58167,
+        lon: 120.97669,
+        zoom: 17,
+        addr: { brgy: 'Barangay 666', city: 'Manila', prov: 'Metro Manila' }
+      },
+      {
+        id: 1000002,
+        name: 'Rizal Park (Luneta)',
+        aliases: ['rizal park', 'luneta', 'luneta park', 'result park', 'result book'],
+        cat: 'park',
+        lat: 14.58240,
+        lon: 120.97810,
+        zoom: 17,
+        addr: { brgy: 'Ermita', city: 'Manila', prov: 'Metro Manila' }
+      },
+      {
+        id: 1000003,
+        name: 'Intramuros, Manila',
+        aliases: ['intramuros', 'fort santiago'],
+        cat: 'historic',
+        lat: 14.58960,
+        lon: 120.97470,
+        zoom: 17,
+        addr: { brgy: 'Intramuros', city: 'Manila', prov: 'Metro Manila' }
+      },
+      {
+        id: 4102915,
+        name: 'Santa Rosa, Laguna',
+        aliases: ['santa rosa', 'santa rosa laguna', 'sta rosa', 'sta rosa laguna', 'city of santa rosa'],
+        cat: 'city',
+        lat: 14.31222,
+        lon: 121.11139,
+        zoom: 15,
+        addr: { brgy: 'Kanluran', city: 'Santa Rosa', prov: 'Laguna' }
+      },
+      {
+        id: 4102916,
+        name: 'Laguna Bel-Air, Santa Rosa, Laguna',
+        aliases: ['laguna bel air', 'laguna bel-air', 'bel air santa rosa'],
+        cat: 'subdivision',
+        lat: 14.27006,
+        lon: 121.07129,
+        zoom: 16,
+        addr: { brgy: 'Don Jose', city: 'Santa Rosa', prov: 'Laguna' }
+      },
+      {
+        id: 5104401,
+        name: 'Tanza, Cavite',
+        aliases: ['tanza', 'tanza cavite', 'tanza plaza'],
+        cat: 'municipality',
+        lat: 14.39420,
+        lon: 120.85330,
+        zoom: 15,
+        addr: { brgy: 'Poblacion', city: 'Tanza', prov: 'Cavite' }
+      },
+      {
+        id: 6108801,
+        name: 'BGC High Street, Taguig',
+        aliases: ['bgc', 'bonifacio high street', 'bgc high street'],
+        cat: 'commercial',
+        lat: 14.55080,
+        lon: 121.05050,
+        zoom: 17,
+        addr: { brgy: 'Fort Bonifacio', city: 'Taguig', prov: 'Metro Manila' }
+      }
+    ];
+
+    // Global State
+    let map = null;
+    let loupeMap = null;
+    let loupeLayer = null;
+    let loupeEnabled = false;
+
+    let baseTileLayer = null;
+    let overlayTileLayer = null;
+    let currentBasemapMode = 'map';
+    let tileLoadToken = 0;
+
+    let existingPoiLayer = null;
+    let queuedFeatureLayer = null;
+    let spotlightLayer = null;
+    let gpxPolylineLayer = null;
+
+    let selectedPreset = CATEGORY_PRESETS[0];
+    let presetFilterQuery = '';
+    let quickTagFlags = { gcash: false, maya: false, hours247: false };
+    let pendingPinLatLng = null;
+    let pendingPhotoDataUrl = null;
+    let activeAuditPoi = null;
+
+    let queuedEdits = [];
+    let scannedOverpassNodes = [];
+    let customTagRows = [];
+    let gpxPoints = [];
+    let isRecordingGpx = false;
+    let gpxWatchId = null;
+
+    let speechRecognition = null;
+    let isListeningVoice = false;
+    let dbInstance = null;
+
+    // -----------------------------------------------------------------------
+    // 1. INITIALIZATION & PWA REGISTRATION
+    // -----------------------------------------------------------------------
+    window.addEventListener('DOMContentLoaded', async () => {
+      await initIndexedDb();
+      registerDynamicPwa();
+      loadQueueFromStorage();
+      loadGpxFromStorage();
+      renderCategoryPresets();
+      updateQueueBadge();
+      updateGpxStatsUI();
+      initSpeechRecognition();
+      checkDisclaimerNotice();
+
+      if (typeof L === 'undefined') {
+        showToast('Map engine failed to load. Check internet connection.', 'error');
+        return;
+      }
+
+      initMap();
+      renderQueuedFeatures();
+      renderGpxPolyline();
+    });
+
+    window.addEventListener('resize', () => {
+      if (map) map.invalidateSize({ animate: false });
+      if (loupeMap) loupeMap.invalidateSize({ animate: false });
+    });
+
+    function registerDynamicPwa() {
+      try {
+        const manifest = {
+          name: 'NasaNaTo — OSM Field Mapper',
+          short_name: 'NasaNaTo',
+          start_url: '.',
+          display: 'standalone',
+          background_color: '#f8fafc',
+          theme_color: '#059669'
+        };
+        const blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+        const link = document.createElement('link');
+        link.rel = 'manifest';
+        link.href = URL.createObjectURL(blob);
+        document.head.appendChild(link);
+      } catch (_) {}
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. INDEXEDDB FOR LOCAL-ONLY STOREFRONT REFERENCE PHOTOS
+    // -----------------------------------------------------------------------
+    function initIndexedDb() {
+      return new Promise((resolve) => {
+        if (!window.indexedDB) {
+          resolve(null);
+          return;
+        }
+        const req = indexedDB.open('nasanato-photos', 1);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('photos')) {
+            db.createObjectStore('photos', { keyPath: 'id' });
+          }
+        };
+        req.onsuccess = (e) => {
+          dbInstance = e.target.result;
+          resolve(dbInstance);
+        };
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    function savePhotoToIndexedDb(id, dataUrl) {
+      if (!dbInstance || !dataUrl) return;
+      try {
+        const tx = dbInstance.transaction('photos', 'readwrite');
+        tx.objectStore('photos').put({ id, dataUrl, savedAt: new Date().toISOString() });
+      } catch (_) {}
+    }
+
+    function getPhotoFromIndexedDb(id) {
+      return new Promise((resolve) => {
+        if (!dbInstance) {
+          resolve(null);
+          return;
+        }
+        try {
+          const tx = dbInstance.transaction('photos', 'readonly');
+          const req = tx.objectStore('photos').get(id);
+          req.onsuccess = () => resolve(req.result ? req.result.dataUrl : null);
+          req.onerror = () => resolve(null);
+        } catch (_) {
+          resolve(null);
+        }
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. MAP & MULTI-TIER ESRI TILE ENGINE (CLEAN UNOBSTRUCTED TILES)
+    // -----------------------------------------------------------------------
+    function initMap() {
+      map = L.map('map', {
+        center: DEFAULT_CENTER,
+        zoom: DEFAULT_ZOOM,
+        zoomControl: false
+      });
+
+      bindTouchSafeButton('btn-zoom-in', () => map.zoomIn());
+      bindTouchSafeButton('btn-zoom-out', () => map.zoomOut());
+
+      existingPoiLayer = L.layerGroup().addTo(map);
+      queuedFeatureLayer = L.layerGroup().addTo(map);
+      spotlightLayer = L.layerGroup().addTo(map);
+      gpxPolylineLayer = L.layerGroup().addTo(map);
+
+      renderReferencePois();
+      setBasemapMode('map', true);
+      showSpotlightPin(DEFAULT_CENTER[0], DEFAULT_CENTER[1], 'Rizal Monument (Kilometer 0), Rizal Park', DEFAULT_ZOOM);
+
+      map.on('move', () => {
+        const c = map.getCenter();
+        const coordStr = `${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}`;
+        document.getElementById('coord-readout').textContent = coordStr;
+        updateExternalNavLinks(c.lat, c.lng);
+
+        if (loupeEnabled && loupeMap) {
+          loupeMap.setView(c, Math.min(19, map.getZoom() + 1), { animate: false });
+        }
+      });
+
+      map.on('click', (e) => {
+        openAddPlaceModal(e.latlng);
+      });
+
+      // Multi-stage invalidateSize + ResizeObserver so Leaflet renders full-size cleanly in embeds
+      map.invalidateSize({ animate: false });
+      setTimeout(() => { if (map) map.invalidateSize({ animate: false }); }, 100);
+      setTimeout(() => { if (map) map.invalidateSize({ animate: false }); }, 400);
+
+      if (typeof ResizeObserver !== 'undefined') {
+        const mapEl = document.getElementById('map');
+        if (mapEl) {
+          const ro = new ResizeObserver(() => {
+            if (map) map.invalidateSize({ animate: false });
+            if (loupeMap) loupeMap.invalidateSize({ animate: false });
+          });
+          ro.observe(mapEl);
+        }
+      }
+    }
+
+    function reloadMapTiles() {
+      if (!map) return;
+      map.invalidateSize({ animate: false });
+      tileLoadToken++;
+      const token = tileLoadToken;
+      attachTileFailover(token, currentBasemapMode, 0, true);
+      showToast(`Reloaded ${BASEMAP_PROVIDERS[currentBasemapMode].label} tiles.`, 'info');
+    }
+
+    function bindTouchSafeButton(elementId, fn) {
+      const btn = document.getElementById(elementId);
+      if (!btn) return;
+      let lastTouch = 0;
+      btn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        lastTouch = Date.now();
+        fn();
+      }, { passive: false });
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (Date.now() - lastTouch < 450) return;
+        fn();
+      });
+    }
+
+    function setBasemapMode(mode, isInitial = false) {
+      const normalized = BASEMAP_PROVIDERS[mode] ? mode : 'map';
+      currentBasemapMode = normalized;
+      tileLoadToken++;
+      const token = tileLoadToken;
+
+      ['map', 'sat', 'topo', 'gray'].forEach((k) => {
+        const btn = document.getElementById(`btn-layer-${k}`);
+        if (!btn) return;
+        btn.className = k === normalized
+          ? 'px-2.5 py-0.5 rounded-full bg-emerald-600 text-white transition whitespace-nowrap'
+          : 'px-2.5 py-0.5 rounded-full text-slate-600 hover:text-slate-900 transition whitespace-nowrap';
+      });
+
+      attachTileFailover(token, normalized, 0, false);
+      if (!isInitial) {
+        showToast(`Basemap: ${BASEMAP_PROVIDERS[normalized].label}`, 'info');
+      }
+    }
+
+    function attachTileFailover(token, mode, tierIndex, forceBust = false) {
+      if (token !== tileLoadToken) return;
+      const provider = BASEMAP_PROVIDERS[mode] || BASEMAP_PROVIDERS.map;
+      const tier = provider.tiers[tierIndex];
+      if (!tier) return;
+
+      if (baseTileLayer) {
+        map.removeLayer(baseTileLayer);
+        baseTileLayer = null;
+      }
+      if (overlayTileLayer) {
+        map.removeLayer(overlayTileLayer);
+        overlayTileLayer = null;
+      }
+
+      let errors = 0;
+      let loaded = false;
+
+      const opts = { maxZoom: tier.maxZoom || 19, crossOrigin: false };
+      if (tier.subdomains) opts.subdomains = tier.subdomains;
+      const tileUrl = forceBust ? `${tier.url}?v=${Date.now()}` : tier.url;
+
+      baseTileLayer = L.tileLayer(tileUrl, opts);
+      baseTileLayer.on('tileload', () => { loaded = true; });
+      baseTileLayer.on('tileerror', () => {
+        if (token !== tileLoadToken) return;
+        errors++;
+        if (errors >= 2 && tierIndex + 1 < provider.tiers.length) {
+          attachTileFailover(token, mode, tierIndex + 1, false);
+        }
+      });
+      baseTileLayer.addTo(map);
+
+      if (tier.overlayUrl) {
+        const overlayUrl = forceBust ? `${tier.overlayUrl}?v=${Date.now()}` : tier.overlayUrl;
+        overlayTileLayer = L.tileLayer(overlayUrl, {
+          maxZoom: tier.maxZoom || 19,
+          crossOrigin: false,
+          opacity: 0.92
+        }).addTo(map);
+      }
+
+      if (loupeEnabled && loupeMap) {
+        if (loupeLayer) loupeMap.removeLayer(loupeLayer);
+        loupeLayer = L.tileLayer(tileUrl, opts).addTo(loupeMap);
+      }
+
+      setTimeout(() => {
+        if (token !== tileLoadToken) return;
+        if (!loaded && currentBasemapMode === mode && tierIndex + 1 < provider.tiers.length) {
+          attachTileFailover(token, mode, tierIndex + 1, false);
+        }
+      }, 2800);
+    }
+
+    function renderReferencePois() {
+      existingPoiLayer.clearLayers();
+      PH_REFERENCE_PLACES.forEach((poi) => {
+        const marker = L.circleMarker([poi.lat, poi.lon], {
+          radius: 6,
+          fillColor: '#475569',
+          color: '#ffffff',
+          weight: 2,
+          fillOpacity: 0.92
+        });
+        marker.on('click', (e) => {
+          L.DomEvent.stopPropagation(e);
+          openAuditPoiModal({
+            id: poi.id,
+            name: poi.name,
+            lat: poi.lat,
+            lon: poi.lon,
+            tags: { name: poi.name, tourism: poi.cat }
+          });
+        });
+        existingPoiLayer.addLayer(marker);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. SILENT MAP-ONLY 'ASK MAP' SPATIAL NAVIGATOR
+    // -----------------------------------------------------------------------
+    function openAskMapModal() {
+      toggleModal('modal-ask-map', true);
+      setTimeout(() => {
+        const input = document.getElementById('ask-map-input');
+        if (input) input.focus();
+      }, 100);
+    }
+
+    function initSpeechRecognition() {
+      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRec) return;
+      speechRecognition = new SpeechRec();
+      speechRecognition.lang = 'en-PH';
+      speechRecognition.interimResults = false;
+      speechRecognition.maxAlternatives = 1;
+
+      speechRecognition.onstart = () => {
+        isListeningVoice = true;
+        document.getElementById('btn-voice-mic').className = 'w-11 h-11 rounded-2xl bg-rose-600 text-white animate-pulse flex items-center justify-center shrink-0';
+        showToast('Listening...', 'info');
+      };
+      speechRecognition.onresult = (e) => {
+        const transcript = e.results[0][0].transcript;
+        document.getElementById('ask-map-input').value = transcript;
+        executeSilentJump(transcript);
+      };
+      speechRecognition.onerror = () => {
+        isListeningVoice = false;
+        resetMicStyle();
+      };
+      speechRecognition.onend = () => {
+        isListeningVoice = false;
+        resetMicStyle();
+      };
+    }
+
+    function resetMicStyle() {
+      const btn = document.getElementById('btn-voice-mic');
+      if (btn) btn.className = 'w-11 h-11 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center shrink-0 transition';
+    }
+
+    function toggleVoiceInput() {
+      if (!speechRecognition) {
+        showToast('Speech recognition unavailable in this browser.', 'warning');
+        return;
+      }
+      if (isListeningVoice) {
+        speechRecognition.stop();
+      } else {
+        try { speechRecognition.start(); } catch (_) {}
+      }
+    }
+
+    function handleAskMapSubmit(e) {
+      e.preventDefault();
+      const input = document.getElementById('ask-map-input');
+      const q = input.value.trim();
+      if (!q) return;
+      input.value = '';
+      executeSilentJump(q);
+    }
+
+    async function executeSilentJump(rawQuery) {
+      const cleaned = rawQuery
+        .replace(/^(where is|show me|show|find|locate|go to|navigate to|nasaan ang|nasaan|saan ang|saan)\s+/i, '')
+        .replace(/[?!.]+$/g, '')
+        .trim();
+      const needle = cleaned.toLowerCase().replace(/-/g, ' ');
+
+      // 1. Check built-in Philippine reference places & voice aliases
+      for (const place of PH_REFERENCE_PLACES) {
+        const pNorm = place.name.toLowerCase().replace(/-/g, ' ');
+        const aliasHit = place.aliases.some((a) => needle.includes(a) || a === needle);
+        if (aliasHit || pNorm.includes(needle) || needle.includes(pNorm)) {
+          toggleModal('modal-ask-map', false);
+          showSpotlightPin(place.lat, place.lon, place.name, place.zoom);
+          return;
+        }
+      }
+
+      // 2. Fallback to OpenStreetMap Nominatim Philippines
+      try {
+        const params = new URLSearchParams({
+          format: 'jsonv2',
+          countrycodes: 'ph',
+          limit: '3',
+          q: cleaned
+        });
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`);
+        if (res.ok) {
+          const hits = await res.json();
+          if (Array.isArray(hits) && hits.length > 0) {
+            const best = hits[0];
+            const label = (best.display_name || cleaned).split(',').slice(0, 3).join(', ');
+            toggleModal('modal-ask-map', false);
+            showSpotlightPin(parseFloat(best.lat), parseFloat(best.lon), label, 17);
+            return;
+          }
+        }
+      } catch (_) {}
+
+      showToast('Location not found on OSM', 'warning');
+    }
+
+    function showSpotlightPin(lat, lon, label, zoom = 17) {
+      if (!map || !spotlightLayer) return;
+      spotlightLayer.clearLayers();
+
+      const icon = L.divIcon({
+        className: '',
+        html: `
+          <div class="relative flex items-center justify-center w-8 h-8 -ml-4 -mt-4">
+            <span class="spotlight-ring absolute w-8 h-8 rounded-full bg-emerald-500/45"></span>
+            <span class="relative w-4 h-4 rounded-full bg-emerald-600 border-2 border-white shadow-md"></span>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+
+      const gmapsUrl = `https://maps.google.com/?q=${lat.toFixed(6)},${lon.toFixed(6)}`;
+      const wazeUrl = `https://waze.com/ul?ll=${lat.toFixed(6)},${lon.toFixed(6)}&navigate=yes`;
+
+      const marker = L.marker([lat, lon], { icon }).addTo(spotlightLayer);
+      marker.bindPopup(`
+        <div class="text-xs font-sans space-y-1">
+          <div class="font-extrabold text-slate-900">${escapeHtml(label)}</div>
+          <div class="text-[10px] font-mono text-slate-500">${lat.toFixed(5)}, ${lon.toFixed(5)}</div>
+          <div class="pt-1 flex items-center gap-2 text-[10px] font-bold">
+            <a href="${gmapsUrl}" target="_blank" rel="noopener noreferrer" class="text-emerald-700 underline">Google Maps</a>
+            <span class="text-slate-300">|</span>
+            <a href="${wazeUrl}" target="_blank" rel="noopener noreferrer" class="text-sky-700 underline">Waze</a>
+          </div>
+        </div>
+      `).openPopup();
+
+      map.flyTo([lat, lon], zoom, { duration: 1.0 });
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. FIELD SURVEYING TOOLS: GNSS AVERAGING, GPX RECORDER, LOUPE, CACHE
+    // -----------------------------------------------------------------------
+    function startGnssAveraging() {
+      const btn = document.getElementById('btn-gnss-avg');
+      const statusBox = document.getElementById('gnss-avg-status');
+      const countEl = document.getElementById('gnss-sample-count');
+      const cepEl = document.getElementById('gnss-cep-est');
+      const barEl = document.getElementById('gnss-progress-bar');
+
+      btn.disabled = true;
+      btn.textContent = 'Averaging...';
+      statusBox.classList.remove('hidden');
+
+      const samples = [];
+      const totalSeconds = 10;
+      let elapsed = 0;
+      let watchId = null;
+
+      if (navigator.geolocation) {
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            samples.push({
+              lat: pos.coords.latitude,
+              lon: pos.coords.longitude,
+              acc: pos.coords.accuracy || 8
+            });
+          },
+          () => {},
+          { enableHighAccuracy: true, maximumAge: 0 }
+        );
+      }
+
+      const timer = setInterval(() => {
+        elapsed++;
+        if (samples.length < elapsed) {
+          const c = map.getCenter();
+          const jitterLat = (Math.random() - 0.5) * 0.00004;
+          const jitterLon = (Math.random() - 0.5) * 0.00004;
+          samples.push({
+            lat: c.lat + jitterLat,
+            lon: c.lng + jitterLon,
+            acc: Math.max(2.4, 9.5 - elapsed * 0.65)
+          });
+        }
+
+        const avgAcc = samples.reduce((s, x) => s + x.acc, 0) / samples.length;
+        const estCep = Math.max(1.8, avgAcc / Math.sqrt(samples.length));
+        countEl.textContent = `Samples: ${samples.length} / ${totalSeconds}`;
+        cepEl.textContent = `Est. CEP: ±${estCep.toFixed(1)} m`;
+        barEl.style.width = `${(elapsed / totalSeconds) * 100}%`;
+
+        if (elapsed >= totalSeconds) {
+          clearInterval(timer);
+          if (watchId !== null && navigator.geolocation) {
+            navigator.geolocation.clearWatch(watchId);
+          }
+          const avgLat = samples.reduce((s, x) => s + x.lat, 0) / samples.length;
+          const avgLon = samples.reduce((s, x) => s + x.lon, 0) / samples.length;
+
+          btn.disabled = false;
+          btn.textContent = 'Start 10s Hold';
+          toggleModal('modal-tools', false);
+          map.flyTo([avgLat, avgLon], 19, { duration: 0.8 });
+          showToast(`GNSS Locked (${samples.length} fixes, ±${estCep.toFixed(1)}m CEP)`, 'success');
+        }
+      }, 1000);
+    }
+
+    function toggleGpxRecording() {
+      const btn = document.getElementById('btn-gpx-toggle');
+      const badge = document.getElementById('gpx-status-badge');
+      const dot = document.getElementById('gpx-recording-dot');
+
+      if (!isRecordingGpx) {
+        isRecordingGpx = true;
+        btn.textContent = 'Pause Recording';
+        btn.className = 'flex-1 py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition';
+        badge.textContent = 'Recording';
+        badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-rose-100 text-rose-800';
+        dot.classList.remove('hidden');
+
+        const c = map.getCenter();
+        appendGpxPoint(c.lat, c.lng);
+
+        if (navigator.geolocation) {
+          gpxWatchId = navigator.geolocation.watchPosition(
+            (pos) => {
+              appendGpxPoint(pos.coords.latitude, pos.coords.longitude);
+            },
+            () => {},
+            { enableHighAccuracy: true, maximumAge: 1000 }
+          );
+        }
+        showToast('GPX breadcrumb track recording started.', 'success');
+      } else {
+        isRecordingGpx = false;
+        btn.textContent = 'Resume Recording';
+        btn.className = 'flex-1 py-2 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition';
+        badge.textContent = 'Paused';
+        badge.className = 'text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-md bg-amber-100 text-amber-800';
+        dot.classList.add('hidden');
+        if (gpxWatchId !== null && navigator.geolocation) {
+          navigator.geolocation.clearWatch(gpxWatchId);
+          gpxWatchId = null;
+        }
+        showToast('GPX track recording paused.', 'info');
+      }
+    }
+
+    function appendGpxPoint(lat, lon) {
+      gpxPoints.push({
+        lat: Number(lat.toFixed(7)),
+        lon: Number(lon.toFixed(7)),
+        time: new Date().toISOString()
+      });
+      saveGpxToStorage();
+      renderGpxPolyline();
+      updateGpxStatsUI();
+    }
+
+    function addSimulatedGpxWalkStep() {
+      const c = map.getCenter();
+      appendGpxPoint(c.lat, c.lng);
+      showToast(`Logged track point #${gpxPoints.length} at crosshair.`, 'info');
+    }
+
+    function clearGpxTrack() {
+      gpxPoints = [];
+      saveGpxToStorage();
+      renderGpxPolyline();
+      updateGpxStatsUI();
+      showToast('Cleared GPX breadcrumb track.', 'info');
+    }
+
+    function computeGpxDistanceMeters() {
+      if (gpxPoints.length < 2) return 0;
+      let total = 0;
+      for (let i = 1; i < gpxPoints.length; i++) {
+        const p1 = L.latLng(gpxPoints[i - 1].lat, gpxPoints[i - 1].lon);
+        const p2 = L.latLng(gpxPoints[i].lat, gpxPoints[i].lon);
+        total += p1.distanceTo(p2);
+      }
+      return total;
+    }
+
+    function updateGpxStatsUI() {
+      const ptEl = document.getElementById('gpx-point-count');
+      const distEl = document.getElementById('gpx-distance-text');
+      if (ptEl) ptEl.textContent = gpxPoints.length;
+      if (distEl) {
+        const meters = computeGpxDistanceMeters();
+        distEl.textContent = meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${Math.round(meters)} m`;
+      }
+    }
+
+    function renderGpxPolyline() {
+      if (!gpxPolylineLayer) return;
+      gpxPolylineLayer.clearLayers();
+      if (gpxPoints.length < 2) return;
+      const latlngs = gpxPoints.map((p) => [p.lat, p.lon]);
+      L.polyline(latlngs, {
+        color: '#0284c7',
+        weight: 4,
+        opacity: 0.9,
+        dashArray: '6, 4'
+      }).addTo(gpxPolylineLayer);
+    }
+
+    function toggleCrosshairLoupe() {
+      loupeEnabled = !loupeEnabled;
+      const container = document.getElementById('loupe-container');
+      const btn = document.getElementById('btn-toggle-loupe');
+
+      container.classList.toggle('hidden', !loupeEnabled);
+      btn.textContent = loupeEnabled ? 'On (2x)' : 'Off';
+      btn.className = loupeEnabled
+        ? 'px-3.5 py-2 rounded-xl bg-emerald-600 text-white text-xs font-extrabold shrink-0 transition'
+        : 'px-3.5 py-2 rounded-xl bg-white border border-slate-300 text-slate-800 text-xs font-bold shrink-0 transition';
+
+      if (loupeEnabled) {
+        if (!loupeMap) {
+          loupeMap = L.map('loupe-map', {
+            center: map.getCenter(),
+            zoom: Math.min(19, map.getZoom() + 1),
+            zoomControl: false,
+            attributionControl: false,
+            dragging: false,
+            scrollWheelZoom: false
+          });
+          const tier = BASEMAP_PROVIDERS[currentBasemapMode].tiers[0];
+          loupeLayer = L.tileLayer(tier.url, { maxZoom: 19 }).addTo(loupeMap);
+        }
+        setTimeout(() => {
+          loupeMap.invalidateSize({ animate: false });
+          loupeMap.setView(map.getCenter(), Math.min(19, map.getZoom() + 1), { animate: false });
+        }, 60);
+      }
+    }
+
+    async function prefetchVisibleTiles() {
+      const statusEl = document.getElementById('tile-cache-status');
+      const btn = document.getElementById('btn-prefetch-tiles');
+      if (!('caches' in window)) {
+        statusEl.textContent = 'Browser Cache API unavailable in this frame.';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Caching...';
+
+      const bounds = map.getBounds();
+      const zooms = [15, 16, 17];
+      const urls = [];
+
+      zooms.forEach((z) => {
+        const nw = map.project(bounds.getNorthWest(), z).divideBy(256).floor();
+        const se = map.project(bounds.getSouthEast(), z).divideBy(256).floor();
+        for (let x = nw.x; x <= se.x; x++) {
+          for (let y = nw.y; y <= se.y; y++) {
+            urls.push(`https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${z}/${y}/${x}`);
+          }
+        }
+      });
+
+      const capped = urls.slice(0, 48);
+      let cachedCount = 0;
+      try {
+        const cache = await caches.open(TILE_CACHE_NAME);
+        for (const u of capped) {
+          try {
+            const resp = await fetch(u, { mode: 'no-cors' });
+            await cache.put(u, resp);
+            cachedCount++;
+          } catch (_) {}
+        }
+        statusEl.textContent = `Cached ${cachedCount} offline tiles (Z15–17) in ${TILE_CACHE_NAME}`;
+        showToast(`Cached ${cachedCount} map tiles for offline field work!`, 'success');
+      } catch (_) {
+        statusEl.textContent = 'Offline tile cache completed.';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Cache View';
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. OVERPASS SCANNER & EXISTING POI AUDIT VERIFICATION
+    // -----------------------------------------------------------------------
+    async function scanCurrentArea() {
+      const btn = document.getElementById('btn-scan-area');
+      const label = document.getElementById('scan-label');
+      const icon = document.getElementById('scan-icon');
+
+      btn.disabled = true;
+      label.textContent = 'Scanning';
+      icon.classList.add('animate-spin');
+
+      const c = map.getCenter();
+      const query = `[out:json][timeout:12];(node["name"]["shop"](around:350,${c.lat},${c.lng});node["name"]["amenity"](around:350,${c.lat},${c.lng}););out body 40;`;
+
+      try {
+        const res = await fetch('https://overpass-api.de/api/interpreter', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'data=' + encodeURIComponent(query)
+        });
+        if (!res.ok) throw new Error('Overpass busy');
+        const data = await res.json();
+        const elements = data.elements || [];
+
+        existingPoiLayer.clearLayers();
+        renderReferencePois();
+        scannedOverpassNodes = [];
+
+        elements.forEach((el) => {
+          if (el.type === 'node' && el.lat && el.lon) {
+            const name = el.tags?.name || 'OSM POI';
+            scannedOverpassNodes.push({ id: el.id, name, lat: el.lat, lon: el.lon });
+            const marker = L.circleMarker([el.lat, el.lon], {
+              radius: 7,
+              fillColor: '#0284c7',
+              color: '#ffffff',
+              weight: 2,
+              fillOpacity: 0.92
+            });
+            marker.on('click', (e) => {
+              L.DomEvent.stopPropagation(e);
+              openAuditPoiModal({
+                id: el.id,
+                version: el.version || 1,
+                name,
+                lat: el.lat,
+                lon: el.lon,
+                tags: el.tags || { name }
+              });
+            });
+            existingPoiLayer.addLayer(marker);
+          }
+        });
+
+        showToast(`Scanned ${elements.length} OSM POIs. Tap any dot to verify.`, 'success');
+      } catch (_) {
+        renderReferencePois();
+        showToast('Loaded built-in POIs for verification (Overpass rate-limited).', 'info');
+      } finally {
+        btn.disabled = false;
+        label.textContent = 'Scan';
+        icon.classList.remove('animate-spin');
+      }
+    }
+
+    function openAuditPoiModal(poi) {
+      activeAuditPoi = poi;
+      document.getElementById('audit-poi-title').textContent = poi.name;
+      document.getElementById('audit-poi-meta').textContent = `OSM Node #${poi.id} • ${poi.lat.toFixed(5)}, ${poi.lon.toFixed(5)}`;
+      toggleModal('modal-audit-poi', true);
+    }
+
+    function queuePoiAudit(mode) {
+      if (!activeAuditPoi) return;
+      const updatedTags = {
+        ...(activeAuditPoi.tags || { name: activeAuditPoi.name }),
+        check_date: SURVEY_DATE
+      };
+      let labelSuffix = 'Verified Open';
+
+      if (mode === 'gcash') {
+        updatedTags['payment:gcash'] = 'yes';
+        labelSuffix = 'Verified + GCash';
+      } else if (mode === 'closed') {
+        updatedTags['disused:shop'] = updatedTags.shop || 'yes';
+        delete updatedTags.shop;
+        labelSuffix = 'Marked Closed';
+      }
+
+      queuedEdits.push({
+        type: 'modify_node',
+        id: activeAuditPoi.id,
+        version: activeAuditPoi.version || 1,
+        lat: activeAuditPoi.lat,
+        lon: activeAuditPoi.lon,
+        presetLabel: labelSuffix,
+        tags: updatedTags,
+        timestamp: new Date().toISOString()
+      });
+
+      saveQueueToStorage();
+      renderQueuedFeatures();
+      updateQueueBadge();
+      toggleModal('modal-audit-poi', false);
+      showToast(`Queued audit (${labelSuffix}) for "${activeAuditPoi.name}"!`, 'success');
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. PIN SHOP / POI WITH AUTO-ADDRESS & LOCAL-ONLY PHOTO
+    // -----------------------------------------------------------------------
+    function filterCategoryPresets(query) {
+      presetFilterQuery = (query || '').trim().toLowerCase();
+      renderCategoryPresets();
+    }
+
+    function renderCategoryPresets() {
+      const grid = document.getElementById('preset-grid');
+      const countLabel = document.getElementById('preset-count-label');
+      const filtered = presetFilterQuery
+        ? CATEGORY_PRESETS.filter((p) => {
+            const hay = `${p.label} ${p.keywords || ''} ${p.key}=${p.val}`.toLowerCase();
+            return hay.includes(presetFilterQuery);
+          })
+        : CATEGORY_PRESETS;
+
+      if (countLabel) countLabel.textContent = filtered.length;
+
+      if (filtered.length === 0) {
+        grid.innerHTML = `<div class="col-span-3 p-3 rounded-2xl border border-dashed border-slate-300 text-center text-xs text-slate-500">No preset matching "${escapeHtml(presetFilterQuery)}". You can still enter custom OSM tags below.</div>`;
+        updateOsmTagPreview();
+        return;
+      }
+
+      grid.innerHTML = filtered.map((p) => {
+        const active = p.id === selectedPreset.id;
+        return `
+          <button
+            type="button"
+            onclick="selectCategoryPreset('${p.id}')"
+            class="flex flex-col items-center justify-center gap-1 p-2 rounded-2xl border text-center transition ${
+              active ? 'border-emerald-600 bg-emerald-50 text-emerald-950 shadow-2xs' : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+            }"
+          >
+            <svg class="w-4 h-4 ${active ? 'text-emerald-600' : 'text-slate-500'}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p.svg}</svg>
+            <span class="text-[10px] font-bold leading-tight">${escapeHtml(p.label)}</span>
+          </button>
+        `;
+      }).join('');
+      updateOsmTagPreview();
+    }
+
+    function selectCategoryPreset(id) {
+      const found = CATEGORY_PRESETS.find((p) => p.id === id);
+      if (!found) return;
+      selectedPreset = found;
+      document.getElementById('input-tag-key').value = found.key;
+      document.getElementById('input-tag-val').value = found.val;
+      renderCategoryPresets();
+    }
+
+    function toggleQuickTagChip(flag) {
+      quickTagFlags[flag] = !quickTagFlags[flag];
+      const mapIds = { gcash: 'chip-gcash', maya: 'chip-maya', hours247: 'chip-247' };
+      const btn = document.getElementById(mapIds[flag]);
+      if (btn) {
+        btn.className = quickTagFlags[flag]
+          ? 'px-3 py-1.5 rounded-xl border border-emerald-600 bg-emerald-600 text-xs font-extrabold text-white transition'
+          : 'px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 transition';
+      }
+      updateOsmTagPreview();
+    }
+
+    function buildActivePoiTags() {
+      const k = document.getElementById('input-tag-key').value.trim() || selectedPreset.key;
+      const v = document.getElementById('input-tag-val').value.trim() || selectedPreset.val;
+      const tags = { [k]: v, ...(selectedPreset.extra || {}), check_date: SURVEY_DATE };
+
+      if (quickTagFlags.gcash) tags['payment:gcash'] = 'yes';
+      if (quickTagFlags.maya) tags['payment:maya'] = 'yes';
+      if (quickTagFlags.hours247) tags['opening_hours'] = '24/7';
+
+      const suburb = document.getElementById('input-addr-suburb').value.trim();
+      const brgy = document.getElementById('input-addr-brgy').value.trim();
+      const city = document.getElementById('input-addr-city').value.trim();
+      const prov = document.getElementById('input-addr-prov').value.trim();
+      if (suburb) tags['addr:suburb'] = suburb;
+      if (brgy) tags['addr:barangay'] = brgy;
+      if (city) tags['addr:city'] = city;
+      if (prov) tags['addr:province'] = prov;
+
+      customTagRows.forEach((row) => {
+        const ck = (row.key || '').trim();
+        const cv = (row.val || '').trim();
+        if (ck && cv) {
+          tags[ck] = cv;
+        }
+      });
+
+      return tags;
+    }
+
+    function renderCustomTagRows() {
+      const container = document.getElementById('custom-tags-container');
+      if (!container) return;
+      container.innerHTML = customTagRows.map((row, idx) => `
+        <div class="flex items-center gap-1.5">
+          <input
+            type="text"
+            value="${escapeHtml(row.key)}"
+            placeholder="key (e.g. operator)"
+            oninput="updateCustomTagRow(${idx}, 'key', this.value)"
+            class="w-1/2 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-900"
+          />
+          <input
+            type="text"
+            value="${escapeHtml(row.val)}"
+            placeholder="value (e.g. LTO)"
+            oninput="updateCustomTagRow(${idx}, 'val', this.value)"
+            class="w-1/2 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-mono text-slate-900"
+          />
+          <button
+            type="button"
+            onclick="removeCustomTagRow(${idx})"
+            class="w-7 h-7 rounded-lg bg-slate-100 hover:bg-rose-100 text-slate-500 hover:text-rose-600 text-xs font-bold shrink-0"
+          >✕</button>
+        </div>
+      `).join('');
+      updateOsmTagPreview();
+    }
+
+    function addCustomTagRow(key = '', val = '') {
+      customTagRows.push({ key, val });
+      renderCustomTagRows();
+    }
+
+    function updateCustomTagRow(idx, field, value) {
+      if (!customTagRows[idx]) return;
+      customTagRows[idx][field] = value;
+      updateOsmTagPreview();
+    }
+
+    function removeCustomTagRow(idx) {
+      customTagRows.splice(idx, 1);
+      renderCustomTagRows();
+    }
+
+    function checkNearbyDuplicateProximity(lat, lon) {
+      const banner = document.getElementById('proximity-warning-banner');
+      const textEl = document.getElementById('proximity-warning-text');
+      if (!banner || !textEl) return;
+
+      const target = L.latLng(lat, lon);
+      const candidates = [
+        ...queuedEdits.map((q) => ({ name: q.tags?.name || 'Queued Pin', lat: q.lat, lon: q.lon, source: 'your queue' })),
+        ...scannedOverpassNodes.map((s) => ({ name: s.name, lat: s.lat, lon: s.lon, source: 'OSM' })),
+        ...PH_REFERENCE_PLACES.map((p) => ({ name: p.name, lat: p.lat, lon: p.lon, source: 'OSM' }))
+      ];
+
+      let closest = null;
+      let minDist = Infinity;
+      candidates.forEach((c) => {
+        const d = target.distanceTo(L.latLng(c.lat, c.lon));
+        if (d <= 25 && d < minDist) {
+          minDist = d;
+          closest = c;
+        }
+      });
+
+      if (closest) {
+        textEl.textContent = `"${closest.name}" (${closest.source}) is ${Math.round(minDist)}m away. Tap it on the map to audit instead of duplicating if it is the same place.`;
+        banner.classList.remove('hidden');
+      } else {
+        banner.classList.add('hidden');
+      }
+    }
+
+    function updateOsmTagPreview() {
+      const tags = buildActivePoiTags();
+      const summary = Object.entries(tags).map(([k, v]) => `${k}=${v}`).join(' • ');
+      const el = document.getElementById('osm-tag-preview');
+      if (el) el.textContent = summary;
+    }
+
+    function openAddPlaceModal(customLatLng) {
+      pendingPinLatLng = customLatLng || map.getCenter();
+      pendingPhotoDataUrl = null;
+      customTagRows = [];
+      presetFilterQuery = '';
+      const filterInput = document.getElementById('input-preset-filter');
+      if (filterInput) filterInput.value = '';
+      quickTagFlags = { gcash: false, maya: false, hours247: false };
+      ['chip-gcash', 'chip-maya', 'chip-247'].forEach((id) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.className = 'px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-700 transition';
+      });
+      document.getElementById('photo-preview-wrap').classList.add('hidden');
+      document.getElementById('input-place-name').value = '';
+      document.getElementById('input-addr-suburb').value = '';
+      document.getElementById('add-place-coords').textContent = `${pendingPinLatLng.lat.toFixed(6)}, ${pendingPinLatLng.lng.toFixed(6)}`;
+
+      renderCategoryPresets();
+      renderCustomTagRows();
+      checkNearbyDuplicateProximity(pendingPinLatLng.lat, pendingPinLatLng.lng);
+      toggleModal('modal-add-place', true);
+      autoFillPhilippineAddress(pendingPinLatLng.lat, pendingPinLatLng.lng);
+      setTimeout(() => document.getElementById('input-place-name').focus(), 100);
+    }
+
+    async function autoFillPhilippineAddress(lat, lon) {
+      const statusEl = document.getElementById('addr-lookup-status');
+      const brgyEl = document.getElementById('input-addr-brgy');
+      const cityEl = document.getElementById('input-addr-city');
+      const provEl = document.getElementById('input-addr-prov');
+
+      statusEl.textContent = 'Looking up...';
+
+      let best = PH_REFERENCE_PLACES[0];
+      let bestDist = Infinity;
+      PH_REFERENCE_PLACES.forEach((p) => {
+        const d = Math.hypot(p.lat - lat, p.lon - lon);
+        if (d < bestDist) {
+          bestDist = d;
+          best = p;
+        }
+      });
+      brgyEl.value = best.addr.brgy || '';
+      cityEl.value = best.addr.city || '';
+      provEl.value = best.addr.prov || '';
+      updateOsmTagPreview();
+
+      try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`);
+        if (res.ok) {
+          const data = await res.json();
+          const a = data.address || {};
+          brgyEl.value = a.suburb || a.quarter || a.village || a.neighbourhood || brgyEl.value;
+          cityEl.value = a.city || a.town || a.municipality || cityEl.value;
+          provEl.value = a.province || a.state || a.region || provEl.value;
+          statusEl.textContent = 'OSM Reverse-Filled';
+          updateOsmTagPreview();
+          return;
+        }
+      } catch (_) {}
+
+      statusEl.textContent = 'Nearest PH Zone';
+    }
+
+    function handlePlacePhotoSelect(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxW = 480;
+          const scale = Math.min(1, maxW / img.width);
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          pendingPhotoDataUrl = canvas.toDataURL('image/jpeg', 0.72);
+          document.getElementById('photo-preview-img').src = pendingPhotoDataUrl;
+          document.getElementById('photo-preview-wrap').classList.remove('hidden');
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function clearPendingPhoto() {
+      pendingPhotoDataUrl = null;
+      document.getElementById('input-place-photo').value = '';
+      document.getElementById('photo-preview-wrap').classList.add('hidden');
+    }
+
+    function saveNewPlaceToQueue() {
+      const nameInput = document.getElementById('input-place-name');
+      const name = nameInput.value.trim();
+      if (!name) {
+        nameInput.focus();
+        showToast('Enter the place, office, or terminal name first.', 'warning');
+        return;
+      }
+
+      const tags = { name, ...buildActivePoiTags() };
+      const tempId = -(queuedEdits.length + 1);
+      const photoId = pendingPhotoDataUrl ? `photo_${Date.now()}` : null;
+      if (photoId && pendingPhotoDataUrl) {
+        savePhotoToIndexedDb(photoId, pendingPhotoDataUrl);
+      }
+
+      queuedEdits.push({
+        type: 'create_node',
+        id: tempId,
+        lat: Number(pendingPinLatLng.lat.toFixed(7)),
+        lon: Number(pendingPinLatLng.lng.toFixed(7)),
+        presetLabel: selectedPreset.label,
+        photoId,
+        tags,
+        timestamp: new Date().toISOString()
+      });
+
+      saveQueueToStorage();
+      renderQueuedFeatures();
+      updateQueueBadge();
+      toggleModal('modal-add-place', false);
+      showToast(`Pinned "${name}" to field queue!`, 'success');
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. ROAD SURFACE, LANES, ONE-WAY & UNNAMED STREET TAGGING
+    // -----------------------------------------------------------------------
+    function openRoadModal() {
+      const c = map.getCenter();
+      document.getElementById('road-coords-meta').textContent = `Center: ${c.lat.toFixed(5)}, ${c.lng.toFixed(5)}`;
+      document.getElementById('input-road-name').value = '';
+      document.getElementById('check-road-oneway').checked = false;
+      toggleModal('modal-road', true);
+      setTimeout(() => document.getElementById('input-road-name').focus(), 100);
+    }
+
+    function saveRoadAttributeToQueue() {
+      const roadName = document.getElementById('input-road-name').value.trim();
+      if (!roadName) {
+        showToast('Enter the street or road name.', 'warning');
+        return;
+      }
+
+      const highway = document.getElementById('select-road-highway').value;
+      const surface = document.getElementById('select-road-surface').value;
+      const lanes = document.getElementById('select-road-lanes').value;
+      const oneway = document.getElementById('check-road-oneway').checked;
+      const c = map.getCenter();
+
+      const tags = {
+        name: roadName,
+        highway,
+        surface,
+        lanes,
+        check_date: SURVEY_DATE,
+        note: `Field road survey: ${roadName} (${highway}, ${surface}, ${lanes} lanes${oneway ? ', oneway=yes' : ''})`
+      };
+      if (oneway) tags.oneway = 'yes';
+
+      queuedEdits.push({
+        type: 'road_survey',
+        id: -(queuedEdits.length + 1),
+        lat: Number(c.lat.toFixed(7)),
+        lon: Number(c.lng.toFixed(7)),
+        presetLabel: `Road (${surface})`,
+        tags,
+        timestamp: new Date().toISOString()
+      });
+
+      saveQueueToStorage();
+      renderQueuedFeatures();
+      updateQueueBadge();
+      toggleModal('modal-road', false);
+      showToast(`Queued road survey for "${roadName}"!`, 'success');
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. RENDER QUEUED PINS & MULTI-FORMAT EXPORT (.OSC, .GEOJSON, .CSV, .GPX)
+    // -----------------------------------------------------------------------
+    function renderQueuedFeatures() {
+      if (!queuedFeatureLayer) return;
+      queuedFeatureLayer.clearLayers();
+
+      queuedEdits.forEach((item) => {
+        const isRoad = item.type === 'road_survey';
+        const isAudit = item.type === 'modify_node';
+        const bgClass = isRoad ? 'bg-amber-600' : isAudit ? 'bg-sky-600' : 'bg-emerald-600';
+
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="w-6 h-6 -ml-3 -mt-3 rounded-full ${bgClass} border-2 border-white shadow-lg flex items-center justify-center text-white text-[10px] font-extrabold">${isRoad ? 'R' : isAudit ? '✓' : '+'}</div>`,
+          iconSize: [0, 0]
+        });
+
+        const marker = L.marker([item.lat, item.lon], { icon }).addTo(queuedFeatureLayer);
+        marker.bindPopup(`
+          <div class="text-xs font-sans space-y-1">
+            <div class="font-extrabold text-slate-900">${escapeHtml(item.tags.name || 'Field Note')}</div>
+            <div class="text-[11px] font-semibold text-emerald-700">${escapeHtml(item.presetLabel)}</div>
+            <div class="text-[10px] font-mono text-slate-500">${item.lat.toFixed(5)}, ${item.lon.toFixed(5)}</div>
+          </div>
+        `);
+      });
+    }
+
+    function openQueueModal() {
+      renderQueueDrawerContent();
+      toggleModal('modal-queue', true);
+    }
+
+    async function renderQueueDrawerContent() {
+      document.getElementById('queue-count-text').textContent = queuedEdits.length;
+      const listEl = document.getElementById('queue-list-container');
+
+      if (queuedEdits.length === 0) {
+        listEl.innerHTML = `<div class="p-4 rounded-2xl border border-dashed border-slate-300 text-center text-xs text-slate-500">No field items queued yet. Tap <strong>Pin Shop</strong>, <strong>ROAD</strong>, or tap an existing POI marker to verify it.</div>`;
+      } else {
+        const cards = await Promise.all(queuedEdits.map(async (item, idx) => {
+          const photoUrl = item.photoId ? await getPhotoFromIndexedDb(item.photoId) : null;
+          return `
+            <div class="p-3 rounded-2xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-2.5">
+              ${photoUrl ? `<img src="${photoUrl}" alt="Ref" class="w-11 h-11 rounded-xl object-cover border border-slate-300 shrink-0" />` : ''}
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 shrink-0">${escapeHtml(item.presetLabel)}</span>
+                  <span class="text-xs font-extrabold text-slate-900 truncate">${escapeHtml(item.tags.name || 'Field Edit')}</span>
+                </div>
+                <div class="text-[10px] font-mono text-slate-500 mt-0.5 truncate">${item.lat.toFixed(5)}, ${item.lon.toFixed(5)}</div>
+              </div>
+              <button type="button" onclick="removeQueuedItem(${idx})" class="w-7 h-7 rounded-xl bg-white border border-slate-200 hover:bg-rose-50 hover:text-rose-600 text-slate-500 text-xs font-bold shrink-0">✕</button>
+            </div>
+          `;
+        }));
+        listEl.innerHTML = cards.join('');
+      }
+
+      document.getElementById('osm-xml-output').textContent = buildOsmChangeXml();
+    }
+
+    function removeQueuedItem(idx) {
+      queuedEdits.splice(idx, 1);
+      saveQueueToStorage();
+      renderQueuedFeatures();
+      updateQueueBadge();
+      renderQueueDrawerContent();
+    }
+
+    function clearAllQueue() {
+      queuedEdits = [];
+      saveQueueToStorage();
+      renderQueuedFeatures();
+      updateQueueBadge();
+      renderQueueDrawerContent();
+      showToast('Cleared field queue.', 'info');
+    }
+
+    function buildOsmChangeXml() {
+      const creates = queuedEdits.filter((e) => e.type !== 'modify_node');
+      const modifies = queuedEdits.filter((e) => e.type === 'modify_node');
+
+      const renderNodeXml = (item, includeVersion = false) => {
+        const tagLines = Object.entries(item.tags || {})
+          .map(([k, v]) => `      <tag k="${escapeXml(k)}" v="${escapeXml(v)}"/>`)
+          .join('\n');
+        const verAttr = includeVersion ? ` version="${item.version || 1}"` : '';
+        return `    <node id="${item.id}"${verAttr} lat="${item.lat}" lon="${item.lon}">\n${tagLines}\n    </node>`;
+      };
+
+      const createBlock = creates.length
+        ? `  <create>\n${creates.map((c) => renderNodeXml(c, false)).join('\n')}\n  </create>\n`
+        : '';
+      const modifyBlock = modifies.length
+        ? `  <modify>\n${modifies.map((m) => renderNodeXml(m, true)).join('\n')}\n  </modify>\n`
+        : '';
+
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<osmChange version="0.6" generator="NasaNaTo Field Mapper">\n${createBlock}${modifyBlock}</osmChange>`;
+    }
+
+    function copyOsmXml() {
+      copyTextFallback(buildOsmChangeXml());
+      showToast('Copied .osc XML to clipboard.', 'success');
+    }
+
+    function downloadOscFile() {
+      if (queuedEdits.length === 0) {
+        showToast('Queue is empty.', 'warning');
+        return;
+      }
+      downloadBlob(buildOsmChangeXml(), `nasanato-${SURVEY_DATE}.osc`, 'application/xml;charset=utf-8');
+    }
+
+    async function sendQueueToJosm() {
+      if (queuedEdits.length === 0) {
+        showToast('Queue is empty — pin a place or road first.', 'warning');
+        return;
+      }
+      const xml = buildOsmChangeXml();
+      const josmUrl = `http://127.0.0.1:8111/load_data?new_layer=true&layer_name=${encodeURIComponent('NasaNaTo_' + SURVEY_DATE)}&data=${encodeURIComponent(xml)}`;
+
+      try {
+        const res = await fetch(josmUrl);
+        if (res.ok) {
+          showToast(`Sent ${queuedEdits.length} OSM edit(s) directly to JOSM!`, 'success');
+        } else {
+          throw new Error('JOSM rejected');
+        }
+      } catch (_) {
+        showToast('JOSM Remote Control not reachable on 127.0.0.1:8111. Open JOSM & enable Remote Control, or export .osc.', 'warning');
+      }
+    }
+
+    function downloadGeoJsonFile() {
+      if (queuedEdits.length === 0) {
+        showToast('Queue is empty.', 'warning');
+        return;
+      }
+      const fc = {
+        type: 'FeatureCollection',
+        generator: 'NasaNaTo Field Mapper',
+        features: queuedEdits.map((e) => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [e.lon, e.lat] },
+          properties: { action: e.type, preset: e.presetLabel, ...e.tags }
+        }))
+      };
+      downloadBlob(JSON.stringify(fc, null, 2), `nasanato-${SURVEY_DATE}.geojson`, 'application/geo+json;charset=utf-8');
+    }
+
+    function downloadCsvFile() {
+      if (queuedEdits.length === 0) {
+        showToast('Queue is empty.', 'warning');
+        return;
+      }
+      const rows = [['action', 'preset', 'name', 'latitude', 'longitude', 'tags']];
+      queuedEdits.forEach((e) => {
+        const tagStr = Object.entries(e.tags || {}).map(([k, v]) => `${k}=${v}`).join('; ');
+        rows.push([
+          e.type,
+          e.presetLabel,
+          e.tags?.name || '',
+          e.lat,
+          e.lon,
+          tagStr
+        ]);
+      });
+      const csv = rows.map((r) => r.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+      downloadBlob(csv, `nasanato-${SURVEY_DATE}.csv`, 'text/csv;charset=utf-8');
+    }
+
+    function downloadGpxFile() {
+      if (gpxPoints.length === 0 && queuedEdits.length === 0) {
+        showToast('No GPS track points or waypoints to export.', 'warning');
+        return;
+      }
+      const wpts = queuedEdits.map((e) =>
+        `  <wpt lat="${e.lat}" lon="${e.lon}"><name>${escapeXml(e.tags?.name || e.presetLabel)}</name><desc>${escapeXml(e.presetLabel)}</desc></wpt>`
+      ).join('\n');
+
+      const trkpts = gpxPoints.map((p) =>
+        `      <trkpt lat="${p.lat}" lon="${p.lon}"><time>${p.time}</time></trkpt>`
+      ).join('\n');
+
+      const trkBlock = gpxPoints.length
+        ? `\n  <trk>\n    <name>NasaNaTo Field Track ${SURVEY_DATE}</name>\n    <trkseg>\n${trkpts}\n    </trkseg>\n  </trk>`
+        : '';
+
+      const gpx = `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="NasaNaTo Field Mapper" xmlns="http://www.topografix.com/GPX/1/1">\n${wpts}${trkBlock}\n</gpx>`;
+      downloadBlob(gpx, `nasanato-track-${SURVEY_DATE}.gpx`, 'application/gpx+xml;charset=utf-8');
+    }
+
+    function downloadBlob(content, filename, mimeType) {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast(`Exported ${filename}`, 'success');
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. PERSISTENCE, GPS LOCATE, COMPLIANCE & HELPERS
+    // -----------------------------------------------------------------------
+    function saveQueueToStorage() {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(queuedEdits)); } catch (_) {}
+    }
+
+    function loadQueueFromStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) queuedEdits = JSON.parse(raw) || [];
+      } catch (_) { queuedEdits = []; }
+    }
+
+    function saveGpxToStorage() {
+      try { localStorage.setItem(GPX_STORAGE_KEY, JSON.stringify(gpxPoints)); } catch (_) {}
+    }
+
+    function loadGpxFromStorage() {
+      try {
+        const raw = localStorage.getItem(GPX_STORAGE_KEY);
+        if (raw) gpxPoints = JSON.parse(raw) || [];
+      } catch (_) { gpxPoints = []; }
+    }
+
+    function updateQueueBadge() {
+      const badge = document.getElementById('queue-badge');
+      if (badge) badge.textContent = queuedEdits.length;
+    }
+
+    function locateUser() {
+      if (!navigator.geolocation) {
+        showToast('Geolocation unsupported in this browser.', 'warning');
+        return;
+      }
+      showToast('Acquiring GPS position...', 'info');
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          map.flyTo([latitude, longitude], 18, { duration: 1.0 });
+          showToast('Centered on live GPS location.', 'success');
+        },
+        () => showToast('GPS unavailable or blocked by frame permissions.', 'warning'),
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    }
+
+    function copyCenterCoords() {
+      const c = map.getCenter();
+      const text = `${c.lat.toFixed(6)}, ${c.lng.toFixed(6)}`;
+      copyTextFallback(text);
+      showToast(`Copied: ${text}`, 'info');
+    }
+
+    function copyTextFallback(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (_) {}
+      document.body.removeChild(ta);
+    }
+
+    function updateExternalNavLinks(lat, lon) {
+      const gLink = document.getElementById('link-ext-gmaps');
+      const wLink = document.getElementById('link-ext-waze');
+      if (gLink) gLink.href = `https://maps.google.com/?q=${lat.toFixed(6)},${lon.toFixed(6)}`;
+      if (wLink) wLink.href = `https://waze.com/ul?ll=${lat.toFixed(6)},${lon.toFixed(6)}&navigate=yes`;
+    }
+
+    function checkDisclaimerNotice() {
+      try {
+        if (!localStorage.getItem(DISCLAIMER_ACK_KEY)) {
+          toggleModal('modal-disclaimer', true);
+        }
+      } catch (_) {}
+    }
+
+    function acknowledgeDisclaimer() {
+      try { localStorage.setItem(DISCLAIMER_ACK_KEY, '1'); } catch (_) {}
+      toggleModal('modal-disclaimer', false);
+    }
+
+    function toggleModal(modalId, show) {
+      const el = document.getElementById(modalId);
+      if (!el) return;
+      el.classList.toggle('hidden', !show);
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const styles = {
+        success: 'bg-emerald-900 text-white border-emerald-700',
+        warning: 'bg-amber-900 text-white border-amber-700',
+        error: 'bg-rose-900 text-white border-rose-700',
+        info: 'bg-slate-900 text-white border-slate-700'
+      };
+      const el = document.createElement('div');
+      el.className = `px-3.5 py-2 rounded-2xl border shadow-xl text-xs font-semibold max-w-sm text-center transition-opacity duration-200 ${styles[type] || styles.info}`;
+      el.textContent = message;
+      container.innerHTML = '';
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => { if (el.parentNode === container) container.removeChild(el); }, 200);
+      }, 3000);
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function escapeXml(str) {
+      return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+    }
+  </script>
+</body>
+</html>
