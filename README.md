@@ -21,3 +21,5 @@ Open `http://localhost:8080` in your browser.
 ## Licensing & Attribution
 - **Application Code:** Licensed under the [MIT License](LICENSE).
 - **Map Data & Compliance:** Map data © OpenStreetMap contributors under the **ODbL 1.0**. Always contribute direct field observations and never copy data from proprietary maps.
+
+Created by VelocityVibe Systems • Live App: https://nepp1963.github.io/nasanato/
